@@ -1,4 +1,5 @@
 import { DashboardData } from '../types';
+import { apiFetch } from '../services/api';
 
 export const initialDashboardData: DashboardData = {
   title: 'Dashboard World Cup 2026',
@@ -20,11 +21,8 @@ export const initialDashboardData: DashboardData = {
 
 export const dashboardData = initialDashboardData;
 
-const API_BASE_URL = (process.env.REACT_APP_API_BASE_URL || '').replace(/\/+$/, '');
-
 export const fetchDashboardData = async (): Promise<DashboardData> => {
-  const url = `${API_BASE_URL}/api/dashboard`;
-  const response = await fetch(url, { headers: { Accept: 'application/json' } });
+  const response = await apiFetch('/api/dashboard');
 
   if (!response.ok) {
     throw new Error(`API error: ${response.status} ${response.statusText}`);

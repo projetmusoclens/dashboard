@@ -7,6 +7,7 @@ const { buildMatchFromQuery } = require('./services/query');
 const { registerAnalyticsRoutes } = require('./routes/analytics');
 const { registerCollectionRoutes } = require('./routes/collections');
 const { registerPostRoutes } = require('./routes/posts');
+const { createPasswordAuth } = require('./middleware/auth');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -21,11 +22,22 @@ function safeHandler(handler) {
   };
 }
 
-app.use(cors());
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean);
+if (!process.env.DASHBOARD_PASSWORD) console.warn('DASHBOARD_PASSWORD not set; the API is open to everyone.');
+
+// Render place un proxy devant l'application : req.ip doit venir de son en-tête.
+app.set('trust proxy', 1);
+app.use(cors(ALLOWED_ORIGINS.length ? { origin: ALLOWED_ORIGINS } : undefined));
 app.use(express.json());
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, database: MONGO_DB_NAME });
+});
+
+app.use('/api', createPasswordAuth(process.env.DASHBOARD_PASSWORD));
+
+app.get('/api/auth/check', (req, res) => {
+  res.json({ ok: true });
 });
 
 const routeDependencies = {
