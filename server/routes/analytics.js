@@ -3,7 +3,9 @@ const {
   mongoCollectionNameExpression,
 } = require('../services/collections');
 const { matchesPostQuery } = require('../services/query');
+const { createGraphBuilder } = require('../services/analytics');
 
+const GRAPH_MAX_NODES = 300;
 const EMOJI_PATTERN = `[${String.fromCodePoint(0x2600)}-${String.fromCodePoint(0x27BF)}]`;
 
 function registerAnalyticsRoutes(app, {
@@ -73,15 +75,18 @@ function registerAnalyticsRoutes(app, {
 
   app.get('/api/graph', safeHandler(async (req, res) => {
     const type = req.query.type === 'mentions' ? 'mentions' : 'hashtags';
+    const maxNodes = Math.min(Number(req.query.maxNodes) || GRAPH_MAX_NODES, 2000);
     const dataSource = getDataSource();
     if (dataSource.mode === 'none') return res.json({ nodes: [], links: [] });
     if (dataSource.mode === 'archive') {
       const posts = dataSource.posts.map(normalizePost).filter((post) => matchesPostQuery(post, req.query));
-      return res.json(buildGraphFromPosts(posts, type));
+      return res.json(buildGraphFromPosts(posts, type, maxNodes));
     }
     const match = buildMatchFromQuery(req.query);
-    const posts = await dataSource.db.collection('posts').find(Object.keys(match).length ? match : {}, { projection: { text: 1, author_handle: 1 } }).toArray();
-    return res.json(buildGraphFromPosts(posts, type));
+    const cursor = dataSource.db.collection('posts').find(Object.keys(match).length ? match : {}, { projection: { _id: 0, text: 1, author_handle: 1 } });
+    const builder = createGraphBuilder(type);
+    for await (const post of cursor) builder.add(post);
+    return res.json(builder.result(maxNodes));
   }));
 
   app.get('/api/stats/timeline', safeHandler(async (req, res) => {

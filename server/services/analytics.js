@@ -64,7 +64,7 @@ function buildStatsFromPosts(posts) {
   return { total_posts: posts.length, by_platform: byPlatform, by_lang: byLang, by_keyword: byKeyword, hashtags, top_authors: topAuthors, collection_stats, posts_vs_replies: postsVsReplies, engagement_avg, engagement_sum: sums };
 }
 
-function buildGraphFromPosts(posts, type) {
+function createGraphBuilder(type) {
   const nodeCounts = new Map();
   const edgeCounts = new Map();
   const addNode = (id) => nodeCounts.set(id, (nodeCounts.get(id) || 0) + 1);
@@ -73,7 +73,7 @@ function buildGraphFromPosts(posts, type) {
     edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
   };
 
-  posts.forEach((post) => {
+  const add = (post) => {
     if (type === 'mentions') {
       const author = post.author_handle ? `@${String(post.author_handle).toLowerCase()}` : '@Auteur inconnu';
       const mentions = [...new Set((String(post.text || '').match(/@([A-Za-z0-9_]+)/g) || []).map((value) => value.toLowerCase()))];
@@ -85,15 +85,27 @@ function buildGraphFromPosts(posts, type) {
     for (let index = 0; index < hashtags.length; index += 1) {
       for (let next = index + 1; next < hashtags.length; next += 1) addEdge(hashtags[index], hashtags[next]);
     }
-  });
-
-  return {
-    nodes: Array.from(nodeCounts, ([id, value]) => ({ id, label: id, value })),
-    links: Array.from(edgeCounts, ([key, value]) => {
-      const [source, target] = key.split('::');
-      return { source, target, value };
-    }),
   };
+
+  // maxNodes garde les nœuds les plus fréquents et les liens entre eux.
+  const result = (maxNodes = Infinity) => {
+    const kept = Array.from(nodeCounts).sort((a, b) => b[1] - a[1]).slice(0, maxNodes);
+    const keptIds = new Set(kept.map(([id]) => id));
+    const links = [];
+    edgeCounts.forEach((value, key) => {
+      const [source, target] = key.split('::');
+      if (keptIds.has(source) && keptIds.has(target)) links.push({ source, target, value });
+    });
+    return { nodes: kept.map(([id, value]) => ({ id, label: id, value })), links };
+  };
+
+  return { add, result };
 }
 
-module.exports = { buildGraphFromPosts, buildStatsFromPosts, buildThreads };
+function buildGraphFromPosts(posts, type, maxNodes) {
+  const builder = createGraphBuilder(type);
+  posts.forEach(builder.add);
+  return builder.result(maxNodes);
+}
+
+module.exports = { buildGraphFromPosts, createGraphBuilder, buildStatsFromPosts, buildThreads };

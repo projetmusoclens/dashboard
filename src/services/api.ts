@@ -1,6 +1,6 @@
 import { CollectionStats, Post, Thread } from '../types';
 
-const API_BASE = process.env.REACT_APP_API_BASE_URL || '';
+const API_BASE = (process.env.REACT_APP_API_BASE_URL || '').replace(/\/+$/, '');
 
 export interface QueryParams {
   collectionId?: string;

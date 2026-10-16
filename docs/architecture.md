@@ -50,8 +50,7 @@ La clé est dérivée des données : il n’existe pas de liste codée en dur ni
 
 ## Données et fichiers de projet
 
-- `data_final/heimdall_dump/worldcup2026/` : BSON et métadonnées de l’export local utilisé pour l’import MongoDB.
-- `data_final/docker-compose.yml` : configuration du service MongoDB local.
+- `docker-compose.yml` : configuration du service MongoDB local.
 - `public/` : document HTML de montage et ressources publiques servies telles quelles.
 - `build/` : sortie générée par `npm run build`; ne pas modifier directement.
 - `package.json` : scripts npm, dépendances frontend/backend et proxy CRA.

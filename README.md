@@ -34,12 +34,6 @@ Avec Docker Compose :
 docker compose -f data_final/docker-compose.yml up -d mongo
 ```
 
-Pour importer le dump local fourni dans la base configurée ci-dessus :
-
-```powershell
-mongorestore --uri="mongodb://127.0.0.1:27017" --db=worldcup2026 data_final/heimdall_dump/worldcup2026
-```
-
 Adaptez l’URI et le nom de base si votre configuration diffère. L’import sans `--drop` conserve les documents qui ne sont pas dans le dump. Pour les réimports, vérifiez d’abord les conséquences d’une suppression ou d’un remplacement.
 
 **À propos du dump inclus :** l’échantillon `posts.bson` vérifié dans ce dépôt contient 9 815 posts sans champ `collection_context`, et `collection_runs.bson` est vide. Ces posts seront donc regroupés sous « Collecte inconnue ». Pour voir les noms de collecte attendus, connectez le dashboard à la base qui contient `collection_context.collection_name` sur les documents. Le nombre de collectes est calculé depuis ces données et n’est pas codé en dur.

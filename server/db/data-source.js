@@ -58,7 +58,7 @@ async function connectMongo() {
   try {
     await client.connect();
     db = client.db(MONGO_DB_NAME);
-    console.log(`MongoDB connected to ${MONGO_URI}`);
+    console.log(`MongoDB connected to ${MONGO_URI.replace(/\/\/[^@/]*@/, "//***@")}`);
   } catch (error) {
     db = null;
     console.warn('MongoDB connect failed; attempting archive-only mode.', error?.message || error);

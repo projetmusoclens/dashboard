@@ -20,7 +20,7 @@ export const initialDashboardData: DashboardData = {
 
 export const dashboardData = initialDashboardData;
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '';
+const API_BASE_URL = (process.env.REACT_APP_API_BASE_URL || '').replace(/\/+$/, '');
 
 export const fetchDashboardData = async (): Promise<DashboardData> => {
   const url = `${API_BASE_URL}/api/dashboard`;
