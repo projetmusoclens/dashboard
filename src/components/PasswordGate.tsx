@@ -2,22 +2,30 @@ import React, { useEffect, useState } from 'react';
 import { Lock } from 'lucide-react';
 import { AUTH_REQUIRED_EVENT, checkPassword, getStoredPassword, storePassword } from '../services/api';
 
-type GateState = 'checking' | 'locked' | 'open';
+type GateState = 'checking' | 'locked' | 'open' | 'unreachable';
+
+const WAKE_UP_HINT_MS = 5000;
 
 const PasswordGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, setState] = useState<GateState>('checking');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [slow, setSlow] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let mounted = true;
+    setState('checking');
+    setSlow(false);
+    // L'hébergement gratuit met l'API en veille : le premier appel peut prendre une minute.
+    const hint = window.setTimeout(() => { if (mounted) setSlow(true); }, WAKE_UP_HINT_MS);
     checkPassword(getStoredPassword())
       .then((result) => { if (mounted) setState(result === 'ok' ? 'open' : 'locked'); })
-      // API injoignable : l'application affichera elle-même l'erreur de chargement.
-      .catch(() => { if (mounted) setState('open'); });
-    return () => { mounted = false; };
-  }, []);
+      .catch(() => { if (mounted) setState('unreachable'); })
+      .finally(() => window.clearTimeout(hint));
+    return () => { mounted = false; window.clearTimeout(hint); };
+  }, [attempt]);
 
   useEffect(() => {
     const onAuthRequired = () => {
@@ -53,9 +61,22 @@ const PasswordGate: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 
   return (
     <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 16, background: 'var(--bg)', color: 'var(--text-primary)' }}>
-      {state === 'checking' ? (
-        <p style={{ color: 'var(--text-secondary)' }}>Connexion au serveur…</p>
-      ) : (
+      {state === 'checking' && (
+        <p style={{ color: 'var(--text-secondary)', textAlign: 'center' }}>
+          Connexion au serveur…
+          {slow && <><br />Le serveur se réveille, cela peut prendre jusqu'à une minute.</>}
+        </p>
+      )}
+      {state === 'unreachable' && (
+        <div role="alert" style={{ display: 'grid', gap: 12, justifyItems: 'center', textAlign: 'center', maxWidth: 420 }}>
+          <p>Impossible de joindre le serveur.</p>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Il redémarre peut-être, ou cette adresse du site n'est pas autorisée par l'API (variable ALLOWED_ORIGINS).</p>
+          <button type="button" onClick={() => setAttempt((count) => count + 1)} style={{ padding: '8px 14px', border: 0, borderRadius: 6, background: 'var(--accent)', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
+            Réessayer
+          </button>
+        </div>
+      )}
+      {state === 'locked' && (
         <form onSubmit={submit} style={{ width: 'min(100%, 360px)', display: 'grid', gap: 14, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 10, padding: 24, boxShadow: 'var(--shadow)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <Lock size={18} color="var(--accent)" />

@@ -32,3 +32,13 @@ test('asks for the password and unlocks the app with the right one', async () =>
   expect(await screen.findByText('Contenu')).toBeInTheDocument();
   expect(sessionStorage.getItem('dashboard-password')).toBe('secret');
 });
+
+test('offers a retry when the API cannot be reached', async () => {
+  global.fetch = jest.fn(() => Promise.reject(new TypeError('NetworkError'))) as jest.Mock;
+  render(<PasswordGate><p>Contenu</p></PasswordGate>);
+
+  expect(await screen.findByText('Impossible de joindre le serveur.')).toBeInTheDocument();
+  mockFetch(() => 200);
+  fireEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
+  expect(await screen.findByText('Contenu')).toBeInTheDocument();
+});
