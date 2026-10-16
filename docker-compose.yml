@@ -1,0 +1,27 @@
+name: heimdal_mexico_coupole
+
+services:
+
+
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    environment:
+      - MONGO_INITDB_DATABASE=worldcup2026
+    volumes:
+      - mongo_data:/data/db
+      - ./scripts/mongo_init.js:/docker-entrypoint-initdb.d/init.js:ro
+    ports:
+      - "27017:27017"       
+    mem_limit: 1200m
+    command: mongod --wiredTigerCacheSizeGB 0.6
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  
+volumes:
+  mongo_data:

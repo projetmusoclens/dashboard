@@ -1,0 +1,21 @@
+# Données : ne jamais les envoyer sur Vercel
+data_final/
+public/dashboard-data.json
+wc2026_extract*
+*.bson
+*.jsonl
+*.jsonl.gz
+*.gz
+*.tar.gz
+
+# Backend (non déployé sur Vercel) et secrets
+server/
+.env
+.env.*
+mongorestore_help.txt
+
+# Inutile au build
+node_modules/
+build/
+coverage/
+docs/
