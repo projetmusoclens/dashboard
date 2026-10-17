@@ -1,5 +1,5 @@
 import React from 'react';
-import { LANG_LABELS } from '../data/dashboardData';
+import { langLabel } from '../utils/languages';
 
 interface DashboardFiltersProps {
   collections: { id: string; name: string; count: number }[];
@@ -49,13 +49,14 @@ const DashboardFilters: React.FC<DashboardFiltersProps> = ({
       <option value="">Toutes les plateformes</option>
       <option value="twitter">Twitter</option>
       <option value="bluesky">Bluesky</option>
-      <option value="unknown">Inconnue</option>
     </select>
 
     <label htmlFor="language-filter" style={labelStyle}>Langue :</label>
     <select id="language-filter" value={language} onChange={(event) => onLanguageChange(event.target.value)} style={selectStyle}>
       <option value="">Toutes les langues</option>
-      {Object.keys(languages).map((code) => <option key={code} value={code}>{LANG_LABELS[code] || code} ({languages[code]})</option>)}
+      {Object.entries(languages)
+        .sort((left, right) => right[1] - left[1])
+        .map(([code, count]) => <option key={code} value={code}>{langLabel(code)} ({count})</option>)}
     </select>
 
     <label htmlFor="start-date-filter" style={labelStyle}>Du :</label>

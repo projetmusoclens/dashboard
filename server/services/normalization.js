@@ -41,6 +41,28 @@ function normalizeCollectionContext(post) {
   };
 }
 
+const BLUESKY_QUOTE_EMBEDS = ['app.bsky.embed.record', 'app.bsky.embed.recordWithMedia'];
+
+// Le tweet brut est stocké sous raw_json.tweet ; certains exports le placent directement dans raw_json.
+function rawTweet(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (raw.tweet && typeof raw.tweet === 'object') return raw.tweet;
+  return raw.type === 'tweet' ? raw : null;
+}
+
+function detectPostKind(post) {
+  const raw = post.raw_json && typeof post.raw_json === 'object' ? post.raw_json : null;
+  const tweet = rawTweet(raw);
+  const record = raw && raw.record && typeof raw.record === 'object' ? raw.record : raw;
+  const recordType = record?.$type || null;
+  const isRetweet = post.event_type === 'repost'
+    || recordType === 'app.bsky.feed.repost'
+    || Boolean(tweet?.retweeted_tweet);
+  const isQuote = Boolean(tweet?.quoted_tweet)
+    || BLUESKY_QUOTE_EMBEDS.includes(record?.embed?.$type);
+  return { isRetweet, isQuote };
+}
+
 function normalizePost(post) {
   const rawTs = normalizeTimestamp(post);
   let createdAt = null;
@@ -58,6 +80,7 @@ function normalizePost(post) {
   const videoUrls = normalizeMediaUrls(post.video_urls);
   const mediaUrls = normalizeMediaUrls(post.media_urls, post.media_url, post.media);
   const text = String(firstValue(post.text, post.content) || '');
+  const { isRetweet, isQuote } = detectPostKind(post);
   return {
     id: String(post.post_id || post._id || ''),
     post_id: String(post.post_id || post._id || ''),
@@ -74,6 +97,10 @@ function normalizePost(post) {
     collection_name: normalizeCollectionName(collectionContext.collection_name),
     is_reply: Boolean(replyToId),
     reply_to_id: replyToId ? String(replyToId) : null,
+    is_retweet: isRetweet,
+    is_quote: isQuote,
+    event_type: firstValue(post.event_type),
+    subject_uri: firstValue(post.subject_uri),
     matched_keywords: Array.isArray(post.matched_keywords) ? post.matched_keywords : [],
     has_link: /https?:\/\//i.test(text),
     image_url: imageUrls[0] || null,
@@ -93,4 +120,4 @@ function normalizePost(post) {
   };
 }
 
-module.exports = { firstValue, normalizePost, normalizePlatform };
+module.exports = { detectPostKind, firstValue, normalizePost, normalizePlatform };

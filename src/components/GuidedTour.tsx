@@ -17,7 +17,7 @@ const STEPS: { tab: TabId; title: string; description: string }[] = [
   {
     tab: 'posts',
     title: 'Explorer les publications',
-    description: 'Recherchez dans le texte ou les auteurs, triez par engagement et consultez les médias. Sélectionner un post ouvre son thread.',
+    description: 'Parcourez les tweets X et posts Bluesky, filtrez-les, lisez chaque publication en détail et annotez-la. « Voir le thread » ouvre sa conversation ; « Exporter » récupère vos annotations.',
   },
   {
     tab: 'threads',
@@ -27,7 +27,7 @@ const STEPS: { tab: TabId; title: string; description: string }[] = [
   {
     tab: 'graphs',
     title: 'Lire les graphes',
-    description: 'Passez des hashtags aux mentions. La taille des nœuds représente leur fréquence et l’épaisseur des liens le nombre de relations observées.',
+    description: 'Passez des hashtags aux mentions et choisissez une spatialisation. Cliquez un nœud pour examiner son voisinage, cochez les nœuds utiles et exportez ce sous-graphe avec ses posts.',
   },
   {
     tab: 'overview',

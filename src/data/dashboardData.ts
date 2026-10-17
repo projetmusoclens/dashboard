@@ -33,7 +33,7 @@ export const fetchDashboardData = async (): Promise<DashboardData> => {
 
 export const LANG_LABELS: Record<string, string> = {
   en: 'Anglais', es: 'Espagnol', pt: 'Portugais', ar: 'Arabe',
-  fr: 'Français', tr: 'Turc', qme: 'Autre', de: 'Allemand', ja: 'Japonais', in: 'Indonésien',
+  fr: 'Français', tr: 'Turc', de: 'Allemand', ja: 'Japonais', id: 'Indonésien',
 };
 
 export const CHART_COLORS = [

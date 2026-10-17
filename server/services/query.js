@@ -1,5 +1,45 @@
 const { collectionKey, mongoCollectionKeyExpression } = require('./collections');
 
+const POST_KINDS = ['original', 'reply', 'retweet', 'quote'];
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Mêmes règles que detectPostKind (normalization.js), exprimées pour les pipelines Mongo.
+function mongoIsRetweetExpression() {
+  return { $or: [
+    { $eq: ['$event_type', 'repost'] },
+    { $ne: [{ $ifNull: ['$raw_json.tweet.retweeted_tweet', null] }, null] },
+  ] };
+}
+
+function mongoIsQuoteExpression() {
+  const embedType = { $getField: { field: { $literal: '$type' }, input: { $ifNull: ['$raw_json.embed', {}] } } };
+  return { $or: [
+    { $ne: [{ $ifNull: ['$raw_json.tweet.quoted_tweet', null] }, null] },
+    { $in: [embedType, ['app.bsky.embed.record', 'app.bsky.embed.recordWithMedia']] },
+  ] };
+}
+
+function mongoIsReplyExpression() {
+  return { $ne: [{ $ifNull: ['$reply_to_id', ''] }, ''] };
+}
+
+function mongoKindCondition(kind) {
+  if (kind === 'retweet') return { $expr: mongoIsRetweetExpression() };
+  if (kind === 'quote') return { $expr: mongoIsQuoteExpression() };
+  if (kind === 'reply') return { $expr: mongoIsReplyExpression() };
+  return { $expr: { $not: [{ $or: [mongoIsRetweetExpression(), mongoIsQuoteExpression(), mongoIsReplyExpression()] }] } };
+}
+
+function postMatchesKind(post, kind) {
+  if (kind === 'retweet') return Boolean(post.is_retweet);
+  if (kind === 'quote') return Boolean(post.is_quote);
+  if (kind === 'reply') return Boolean(post.is_reply);
+  return !post.is_retweet && !post.is_quote && !post.is_reply;
+}
+
 function buildMatchFromQuery(query) {
   const conditions = [];
   if (query.collectionId) {
@@ -10,6 +50,11 @@ function buildMatchFromQuery(query) {
     conditions.push({ $or: [{ platform }, { 'collection_context.platform': platform }] });
   }
   if (query.lang) conditions.push({ lang: String(query.lang).toLowerCase() });
+  if (query.q && String(query.q).trim()) {
+    const pattern = new RegExp(escapeRegex(String(query.q).trim()), 'i');
+    conditions.push({ $or: [{ text: pattern }, { author_handle: pattern }, { matched_keywords: pattern }] });
+  }
+  if (POST_KINDS.includes(query.kind)) conditions.push(mongoKindCondition(query.kind));
   if (query.startDate || query.endDate) {
     const dateExpression = { $convert: { input: { $ifNull: ['$timestamp', '$collected_at'] }, to: 'date', onError: null, onNull: null } };
     const comparisons = [];
@@ -31,6 +76,12 @@ function matchesPostQuery(post, query) {
   if (query.collectionId && collectionKey(post.collection_name) !== collectionKey(query.collectionId)) return false;
   if (query.platform && post.platform !== String(query.platform).toLowerCase()) return false;
   if (query.lang && post.lang !== String(query.lang).toLowerCase()) return false;
+  if (query.q && String(query.q).trim()) {
+    const needle = String(query.q).trim().toLowerCase();
+    const haystack = [post.text, post.author_handle, ...(post.matched_keywords || [])].join(' ').toLowerCase();
+    if (!haystack.includes(needle)) return false;
+  }
+  if (POST_KINDS.includes(query.kind) && !postMatchesKind(post, query.kind)) return false;
 
   const rawTimestamp = post.timestamp || post.createdAt || post.created_at || post.collected_at;
   const timestamp = new Date(rawTimestamp || 0);
@@ -43,4 +94,12 @@ function matchesPostQuery(post, query) {
   return true;
 }
 
-module.exports = { buildMatchFromQuery, matchesPostQuery };
+module.exports = {
+  POST_KINDS,
+  buildMatchFromQuery,
+  escapeRegex,
+  matchesPostQuery,
+  mongoIsQuoteExpression,
+  mongoIsReplyExpression,
+  mongoIsRetweetExpression,
+};

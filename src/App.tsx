@@ -1,16 +1,16 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { BarChart2, MessageSquare, GitBranch, Moon, Sun, CircleHelp } from 'lucide-react';
 import { TabId, Post, DashboardData } from './types';
 import { dashboardData as initialDashboardData } from './data/dashboardData';
 import api from './services/api';
 import OverviewTab from './components/OverviewTab';
-import PostsTab from './components/PostsTab';
+import ExplorerTab from './components/ExplorerTab';
 import ThreadsTab from './components/ThreadsTab';
 import GraphsTab from './components/GraphsTab';
 import GuidedTour from './components/GuidedTour';
 import DashboardFilters from './components/DashboardFilters';
 import { fmtNum } from './utils/format';
-import { GraphResponse } from './services/api';
+import { GraphResponse, QueryParams, TimelineResponse } from './services/api';
 import './App.css';
 
 const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
@@ -19,6 +19,9 @@ const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: 'threads', label: 'Threads', icon: <GitBranch size={15} /> },
   { id: 'graphs', label: 'Graphes', icon: <GitBranch size={15} /> },
 ];
+
+// Les graphes chargent jusqu'à 2000 nœuds ; l'onglet Graphes en affiche une partie réglable.
+const GRAPH_MAX_NODES = 2000;
 
 function normalizeTopAuthors(value: { author: string; count: number }[] | Record<string, number> | undefined): Record<string, number> {
   if (Array.isArray(value)) {
@@ -45,7 +48,7 @@ function App() {
   const [lang, setLang] = useState<string>('');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
-  const [timeline, setTimeline] = useState<any[]>([]);
+  const [timeline, setTimeline] = useState<TimelineResponse | null>(null);
   const [loadingWidgets, setLoadingWidgets] = useState(false);
   const [graphs, setGraphs] = useState<{ hashtags: GraphResponse; mentions: GraphResponse } | null>(null);
 
@@ -76,6 +79,7 @@ function App() {
           by_keyword: stats.by_keyword || {},
           hashtags: stats.hashtags || {},
           posts_vs_replies: stats.posts_vs_replies,
+          by_type: stats.by_type,
           top_liked: (posts || []).slice().sort((a: Post, b: Post) => (b.engagement.likes || 0) - (a.engagement.likes || 0)).slice(0, 50),
           top_viewed: (posts || []).slice().sort((a: Post, b: Post) => (b.engagement.views || 0) - (a.engagement.views || 0)).slice(0, 50),
           posts: posts || [],
@@ -99,27 +103,29 @@ function App() {
     return () => { mounted = false; };
   }, []);
 
+  const filters = useMemo<QueryParams>(() => ({
+    ...(selectedCollection ? { collectionId: selectedCollection } : {}),
+    ...(platform ? { platform } : {}),
+    ...(lang ? { lang } : {}),
+    ...(startDate ? { startDate } : {}),
+    ...(endDate ? { endDate } : {}),
+  }), [selectedCollection, platform, lang, startDate, endDate]);
+
   // refetch when filters change (collection, platform, lang, date range)
   useEffect(() => {
     let mounted = true;
     const loadFilters = async () => {
       setLoadingWidgets(true);
       try {
-        const params = {
-          ...(selectedCollection ? { collectionId: selectedCollection } : {}),
-          ...(platform ? { platform } : {}),
-          ...(lang ? { lang } : {}),
-          ...(startDate ? { startDate } : {}),
-          ...(endDate ? { endDate } : {}),
-        };
+        const params = filters;
 
         const [stats, posts, tl, threads, hashtagGraph, mentionGraph] = await Promise.all([
           api.getStats(params),
           api.getPosts({ ...params, limit: 200 }),
           api.getTimeline(params),
           api.getThreads(params),
-          api.getGraph('hashtags', params),
-          api.getGraph('mentions', params),
+          api.getGraph('hashtags', { ...params, maxNodes: GRAPH_MAX_NODES }),
+          api.getGraph('mentions', { ...params, maxNodes: GRAPH_MAX_NODES }),
         ]);
 
         if (!mounted) return;
@@ -132,6 +138,7 @@ function App() {
           by_keyword: stats.by_keyword || {},
           hashtags: stats.hashtags || {},
           posts_vs_replies: stats.posts_vs_replies,
+          by_type: stats.by_type,
           top_liked: (posts || []).slice().sort((a: Post, b: Post) => (b.engagement.likes || 0) - (a.engagement.likes || 0)).slice(0, 50),
           top_viewed: (posts || []).slice().sort((a: Post, b: Post) => (b.engagement.views || 0) - (a.engagement.views || 0)).slice(0, 50),
           posts: posts || [],
@@ -143,7 +150,7 @@ function App() {
           engagement_sum: stats.engagement_sum,
         };
         setDashboardData(computed);
-        setTimeline(tl || []);
+        setTimeline(tl || null);
         setGraphs({ hashtags: hashtagGraph, mentions: mentionGraph });
       } catch (err: any) {
         console.error('Filter load error', err);
@@ -153,7 +160,7 @@ function App() {
     };
     loadFilters();
     return () => { mounted = false; };
-  }, [selectedCollection, platform, lang, startDate, endDate, collections]);
+  }, [filters, collections]);
 
   useEffect(() => {
     if (!selectedPost) return;
@@ -227,7 +234,7 @@ function App() {
             </h1>
             <p className="page-sub">
               {activeTab === 'overview' && `${dashboardData.subtitle} · Analyse des données collectées · FIFA World Cup 2026 Opening Ceremony`}
-              {activeTab === 'posts' && `${dashboardData.posts.length} posts disponibles · triés par engagement`}
+              {activeTab === 'posts' && 'Lire, qualifier et annoter les publications X et Bluesky de la sélection'}
               {activeTab === 'threads' && (selectedPost ? `Thread de @${selectedPost.author_handle}` : `${dashboardData.threads.length} threads actifs collectés`)}
               {activeTab === 'graphs' && graphSubtitle}
             </p>
@@ -268,10 +275,10 @@ function App() {
             <>
               {activeTab === 'overview' && <OverviewTab data={dashboardData} selectedCollection={selectedCollection} timeline={timeline} />}
               {activeTab === 'posts' && (
-                <PostsTab
-                  posts={dashboardData.posts}
-                  onSelectPost={handleSelectPost}
-                  selectedPostId={selectedPost?.post_id}
+                <ExplorerTab
+                  filters={filters}
+                  platformCounts={dashboardData.by_platform || {}}
+                  onOpenThread={handleSelectPost}
                 />
               )}
               {activeTab === 'threads' && (
@@ -281,7 +288,7 @@ function App() {
                 />
               )}
               {activeTab === 'graphs' && (
-                <GraphsTab posts={dashboardData.posts} graphData={graphs || undefined} onGraphChange={setGraphSubtitle} />
+                <GraphsTab posts={dashboardData.posts} graphData={graphs || undefined} filters={filters} onGraphChange={setGraphSubtitle} />
               )}
             </>
           )}
