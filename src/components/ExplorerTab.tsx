@@ -1,14 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FileUp, GitBranch, Info, PencilLine, Search, X, ZoomIn } from 'lucide-react';
-import api, { QueryParams } from '../services/api';
+import api, { deleteAnnotation, exportAnnotations, getAnnotations, importAnnotations, QueryParams, saveAnnotation, StoredAnnotation } from '../services/api';
 import { Post, PostKind, PostSort } from '../types';
 import { fmtNum } from '../utils/format';
 import { langLabel } from '../utils/languages';
 import { downloadFile, toCsv } from '../utils/download';
 import { bskyPostUrl, mediaKind, parseImportedFile, PostRecord, safeUrl, toRecord } from '../utils/postRecord';
 import {
-  Annotation, annotationKey, defaultAnnotation, loadAnnotations, RELEVANCE_LABELS, saveAnnotations, STATUS_LABELS,
+  Annotation, annotationKey, defaultAnnotation, loadAnnotations, RELEVANCE_LABELS, STATUS_LABELS,
 } from '../utils/annotations';
+import { useAuth } from './AuthGate';
 import { platformLabel } from './OverviewTab';
 
 interface ExplorerTabProps {
@@ -93,7 +94,17 @@ const DetailSection: React.FC<{ title: string; rows: [string, React.ReactNode][]
   </div>
 );
 
+const fromServer = (item: StoredAnnotation): Annotation => ({
+  status: item.status, relevance: item.relevance, theme: item.theme, tone: item.tone,
+  interaction: item.interaction, keywords: item.keywords, note: item.note, updatedAt: item.updated_at,
+});
+
+const ANNOTATION_HEADERS = ['statut', 'pertinence', 'theme', 'tonalite', 'interaction', 'mots_cles', 'commentaire', 'annotation_modifiee_le'];
+const annotationCells = (annotation: Annotation) => [annotation.status, annotation.relevance, annotation.theme, annotation.tone, annotation.interaction, annotation.keywords, annotation.note, annotation.updatedAt];
+
 const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOpenThread }) => {
+  const { user } = useAuth();
+  const legacyFlag = `heimdall-explorer-annotations:imported:${user.id}`;
   const [fileSource, setFileSource] = useState<{ name: string; posts: Post[] } | null>(null);
   const availablePlatforms = useMemo<Platform[]>(() => {
     if (fileSource) return PLATFORMS.filter((platform) => fileSource.posts.some((post) => post.platform === platform));
@@ -117,7 +128,10 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [annotations, setAnnotations] = useState<Record<string, Annotation>>(() => loadAnnotations());
+  // Annotations de l'utilisateur connecté, enregistrées sur le serveur.
+  const [annotations, setAnnotations] = useState<Record<string, Annotation>>({});
+  const [annotationsReady, setAnnotationsReady] = useState(false);
+  const [legacyCount, setLegacyCount] = useState(0);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [form, setForm] = useState<Annotation>(defaultAnnotation());
   const [saveState, setSaveState] = useState('—');
@@ -141,6 +155,39 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
     window.clearTimeout(toastRef.current);
     toastRef.current = window.setTimeout(() => setToast(''), 1800);
   }, []);
+
+  const reloadAnnotations = useCallback(() => getAnnotations('mine')
+    .then(({ annotations: items }) => {
+      setAnnotations(Object.fromEntries(items.map((item) => [annotationKey(item.platform, item.post_id), fromServer(item)])));
+      setAnnotationsReady(true);
+    })
+    .catch((error) => showToast(`Annotations indisponibles : ${error.message}`)), [showToast]);
+
+  useEffect(() => {
+    reloadAnnotations();
+    // Annotations faites dans ce navigateur avant l'arrivée des comptes : proposées à l'import une seule fois.
+    try {
+      if (!localStorage.getItem(legacyFlag)) setLegacyCount(Object.keys(loadAnnotations()).length);
+    } catch {
+      setLegacyCount(0);
+    }
+  }, [reloadAnnotations, legacyFlag]);
+
+  const importLegacy = async () => {
+    const items = Object.entries(loadAnnotations()).map(([key, annotation]) => {
+      const [platform, ...rest] = key.split(':');
+      return { ...annotation, platform, post_id: rest.join(':') };
+    });
+    try {
+      const result = await importAnnotations(items);
+      try { localStorage.setItem(legacyFlag, new Date().toISOString()); } catch { /* sans stockage, la proposition reviendra */ }
+      setLegacyCount(0);
+      await reloadAnnotations();
+      showToast(`${result.imported} annotation(s) importée(s)${result.skipped ? ` · ${result.skipped} ignorée(s) (déjà présentes ou invalides)` : ''}`);
+    } catch (error: any) {
+      showToast(`Import impossible : ${error.message || error}`);
+    }
+  };
 
   useEffect(() => {
     if (!availablePlatforms.includes(activePlatform) && availablePlatforms[0]) {
@@ -229,15 +276,26 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
     const key = draftKeyRef.current;
     if (!key || !dirtyRef.current) return;
     dirtyRef.current = false;
-    const next = { ...formRef.current, updatedAt: new Date().toISOString() };
-    setAnnotations((all) => {
-      const updated = { ...all, [key]: next };
-      if (!saveAnnotations(updated)) showToast('Stockage local indisponible : annotation non conservée');
-      return updated;
-    });
-    setSaveState('Enregistré');
-    if (!silent) showToast('Annotation enregistrée');
+    const draft = formRef.current;
+    const [platform, ...rest] = key.split(':');
+    const postId = rest.join(':');
+    setAnnotations((all) => ({ ...all, [key]: { ...draft, updatedAt: new Date().toISOString() } }));
+    setSaveState('Enregistrement…');
+    saveAnnotation({ ...draft, platform, post_id: postId })
+      .then(({ annotation }) => {
+        setAnnotations((all) => ({ ...all, [key]: fromServer(annotation) }));
+        if (draftKeyRef.current === key && !dirtyRef.current) setSaveState('Enregistré');
+        if (!silent) showToast('Annotation enregistrée');
+      })
+      .catch((error) => {
+        // Le brouillon reste « modifié » pour être renvoyé au prochain enregistrement.
+        if (draftKeyRef.current === key) { dirtyRef.current = true; setSaveState('Non enregistré (erreur)'); }
+        showToast(`Annotation non enregistrée : ${error.message || error}`);
+      });
   }, [showToast]);
+
+  const annotationsRef = useRef(annotations);
+  annotationsRef.current = annotations;
 
   // Charge le brouillon du post courant, après avoir enregistré celui du post précédent.
   useEffect(() => {
@@ -245,11 +303,11 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
     if (!current) { draftKeyRef.current = null; return; }
     const key = annotationKey(current.platform, current.id);
     draftKeyRef.current = key;
-    const stored = loadAnnotations()[key];
+    const stored = annotationsRef.current[key];
     setForm({ ...defaultAnnotation(), ...(stored || {}) });
     setSaveState(stored?.updatedAt ? `Modifié ${new Intl.DateTimeFormat('fr-FR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(stored.updatedAt))}` : 'Non enregistré');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.platform, current?.id]);
+  }, [current?.platform, current?.id, annotationsReady]);
 
   useEffect(() => () => commitDraft(), [commitDraft]);
 
@@ -266,14 +324,17 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
     const key = annotationKey(current.platform, current.id);
     dirtyRef.current = false;
     window.clearTimeout(autosaveRef.current);
-    setAnnotations((all) => {
-      const { [key]: _removed, ...rest } = all;
-      saveAnnotations(rest);
-      return rest;
-    });
-    setForm(defaultAnnotation());
-    setSaveState('Non enregistré');
-    showToast('Annotation effacée');
+    deleteAnnotation(current.platform, current.id)
+      .then(() => {
+        setAnnotations((all) => {
+          const { [key]: _removed, ...rest } = all;
+          return rest;
+        });
+        setForm(defaultAnnotation());
+        setSaveState('Non enregistré');
+        showToast('Annotation effacée');
+      })
+      .catch((error) => showToast(`Effacement impossible : ${error.message || error}`));
   };
 
   const move = useCallback((delta: number) => {
@@ -325,32 +386,33 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
   const exportRecords = (format: 'csv' | 'json') => {
     commitDraft();
     setExportOpen(false);
-    const all = loadAnnotations();
-    const withAnnotation = filtered.map((record) => ({ record, annotation: { ...defaultAnnotation(), ...(all[annotationKey(record.platform, record.id)] || {}) } }));
+    const withAnnotation = filtered.map((record) => ({ record, annotation: annotationFor(record) }));
     const stamp = new Date().toISOString().slice(0, 10);
     if (format === 'json') {
       const enriched = withAnnotation.map(({ record, annotation }) => ({ ...record.post, raw_json: record.raw, annotation }));
       downloadFile(JSON.stringify(enriched, null, 2), `corpus_${activePlatform}_annote_${stamp}.json`, 'application/json;charset=utf-8');
     } else {
-      const headers = ['plateforme', 'publication_id', 'url', 'collecte', 'date_publication', 'date_collecte', 'auteur', 'compte', 'texte', 'statut', 'pertinence', 'theme', 'tonalite', 'interaction', 'mots_cles', 'commentaire', 'annotation_modifiee_le'];
-      const rows = withAnnotation.map(({ record, annotation }) => [record.platform, record.id, record.url, record.collection, record.createdAt, record.collectedAt, record.author.name, record.author.handle, record.text, annotation.status, annotation.relevance, annotation.theme, annotation.tone, annotation.interaction, annotation.keywords, annotation.note, annotation.updatedAt]);
+      const headers = ['annotateur', 'plateforme', 'publication_id', 'url', 'collecte', 'date_publication', 'date_collecte', 'auteur', 'compte', 'texte', ...ANNOTATION_HEADERS];
+      const rows = withAnnotation.map(({ record, annotation }) => [user.username, record.platform, record.id, record.url, record.collection, record.createdAt, record.collectedAt, record.author.name, record.author.handle, record.text, ...annotationCells(annotation)]);
       downloadFile(toCsv(headers, rows), `annotations_${activePlatform}_${stamp}.csv`, 'text/csv;charset=utf-8');
     }
     showToast('Export créé');
   };
 
-  const exportAllAnnotations = () => {
+  // Export de toutes les annotations enregistrées (les siennes, ou celles de l'équipe pour l'admin), avec le texte des posts.
+  const exportAllAnnotations = async (scope: 'mine' | 'all') => {
     commitDraft();
     setExportOpen(false);
-    const known = new Map(records.map((record) => [annotationKey(record.platform, record.id), record]));
-    const headers = ['plateforme', 'publication_id', 'texte', 'statut', 'pertinence', 'theme', 'tonalite', 'interaction', 'mots_cles', 'commentaire', 'annotation_modifiee_le'];
-    const rows = Object.entries(loadAnnotations()).map(([key, annotation]) => {
-      const [platform, ...rest] = key.split(':');
-      return [platform, rest.join(':'), known.get(key)?.text ?? '', annotation.status, annotation.relevance, annotation.theme, annotation.tone, annotation.interaction, annotation.keywords, annotation.note, annotation.updatedAt];
-    });
-    if (!rows.length) { showToast('Aucune annotation enregistrée'); return; }
-    downloadFile(toCsv(headers, rows), `annotations_toutes_${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv;charset=utf-8');
-    showToast(`${rows.length} annotation(s) exportée(s)`);
+    try {
+      const { annotations: items } = await exportAnnotations(scope);
+      if (!items.length) { showToast('Aucune annotation enregistrée'); return; }
+      const headers = ['annotateur', 'plateforme', 'publication_id', 'auteur', 'collecte', 'date_publication', 'langue', 'texte', ...ANNOTATION_HEADERS];
+      const rows = items.map((item) => [item.username, item.platform, item.post_id, item.post?.author_handle, item.post?.collection_name, item.post?.timestamp, item.post?.lang, item.post?.text, ...annotationCells(fromServer(item))]);
+      downloadFile(toCsv(headers, rows), `annotations_${scope === 'all' ? 'equipe' : user.username}_${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv;charset=utf-8');
+      showToast(`${rows.length} annotation(s) exportée(s)`);
+    } catch (error: any) {
+      showToast(`Export impossible : ${error.message || error}`);
+    }
   };
 
   const annotationValues = records.map(annotationFor);
@@ -485,7 +547,8 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
               <div className="explorer-menu">
                 <button type="button" onClick={() => exportRecords('csv')}>Annotations de la liste en CSV</button>
                 <button type="button" onClick={() => exportRecords('json')}>Corpus enrichi de la liste en JSON</button>
-                <button type="button" onClick={exportAllAnnotations}>Toutes les annotations enregistrées (CSV)</button>
+                <button type="button" onClick={() => exportAllAnnotations('mine')}>Toutes mes annotations (CSV)</button>
+                {user.role === 'admin' && <button type="button" onClick={() => exportAllAnnotations('all')}>Annotations de toute l’équipe (CSV)</button>}
               </div>
             )}
           </div>
@@ -587,7 +650,7 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
           <div className="explorer-annotation-head">
             <div>
               <h2>Annotation rapide</h2>
-              <div className="explorer-annotation-sub">Enregistrement local dans ce navigateur, séparé pour X et Bluesky.</div>
+              <div className="explorer-annotation-sub">Enregistrée sur le serveur sous votre compte ({user.username}).</div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span className="explorer-save-state">{saveState}</span>
@@ -650,7 +713,14 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
               </div>
             </fieldset>
           </form>
-          <div className="explorer-hint">Les annotations restent dans ce navigateur : exportez-les régulièrement (menu Exporter).</div>
+          {legacyCount > 0 ? (
+            <div className="explorer-hint">
+              {legacyCount} annotation(s) faites avant les comptes sont encore dans ce navigateur.
+              <button type="button" className="explorer-btn primary" style={{ marginTop: 8 }} onClick={importLegacy}>Les importer dans mon compte</button>
+            </div>
+          ) : (
+            <div className="explorer-hint">Vos annotations sont visibles par vous et par les administrateurs. Export via le menu « Exporter ».</div>
+          )}
         </aside>
       </div>
 

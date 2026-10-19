@@ -2,7 +2,11 @@
 
 ## Navigation et filtres
 
-La barre latérale donne accès aux vues globale, explorateur, threads et graphes. Le bouton « Prise en main » relance à tout moment le tour guidé.
+La barre latérale donne accès aux vues globale, explorateur, threads et graphes (et « Utilisateurs » pour les administrateurs). Le bouton « Prise en main » relance à tout moment le tour guidé.
+
+## Compte et connexion
+
+Chacun se connecte avec son identifiant et son mot de passe, fournis par un administrateur. « Mon mot de passe » permet de le changer ; « Se déconnecter » ferme la session (sinon valable 7 jours). Les administrateurs créent les comptes, changent les rôles, réinitialisent les mots de passe et désactivent un accès dans l’onglet « Utilisateurs ».
 
 Les filtres en haut de page sont partagés par toutes les vues : collecte, plateforme, langue et période. Les sélections sont cumulatives. Le nombre affiché à côté d’une collecte correspond aux posts dont `collection_context.collection_name` correspond à cette collecte. Les noms sont normalisés pour ignorer les différences de casse et les espaces superflus.
 
@@ -18,13 +22,15 @@ Le camembert des langues regroupe dans « Autres » les codes non identifiés (`
 
 Lecteur-annotateur repris de l’ancien fichier `lecteur_X_Bluesky_annotation_responsive_v2.html`. Les onglets Tweets X / Posts Bluesky n’affichent que les plateformes présentes dans les filtres. À gauche : recherche dans la base (texte, auteur, mot-clé), tri (récents, likes, vues, reposts, réponses), type de publication, filtres d’annotation, de langue et de média, puis la liste (« Charger plus » ajoute 200 publications). Au centre : la publication complète (médias, lien externe, citation, métriques, entités), navigation par flèches ← →, « Voir les détails » (métadonnées et JSON brut), « Voir le thread » et lien vers l’original. À droite : l’annotation (statut, pertinence, thème, tonalité, interaction, mots-clés, commentaire), enregistrée automatiquement dans le navigateur.
 
-Les annotations restent locales au navigateur : exportez-les via « Exporter » (CSV de la liste, JSON enrichi, ou toutes les annotations enregistrées). « Ouvrir un JSONL » charge un fichier de tweets bruts ou de posts collectés pour l’annoter hors base ; « Revenir à la base » le referme.
+Les annotations sont enregistrées sur le serveur sous votre compte : vous ne voyez que les vôtres, les administrateurs voient celles de toute l’équipe. « Exporter » propose le CSV de la liste, le JSON enrichi, toutes vos annotations et, pour les administrateurs, celles de l’équipe (colonne « annotateur »). Les annotations faites dans un navigateur avant l’arrivée des comptes s’importent avec le bouton proposé dans le panneau d’annotation. « Ouvrir un JSONL » charge un fichier de tweets bruts ou de posts collectés pour l’annoter hors base ; « Revenir à la base » le referme.
 
 Les médias distants dépendent des URL enregistrées et de leur accessibilité depuis le navigateur. Les plateformes peuvent limiter ou faire expirer certaines URL.
 
 ## Threads
 
-La vue présente un post parent et les réponses reliées par `reply_to_id`. Depuis l’explorateur, « Voir le thread » charge la conversation correspondante.
+Les conversations sont reconstruites à partir des réponses collectées (`reply_to_id`). Quand le post d’origine n’a pas été collecté (un tweet officiel auquel des supporters répondent, par exemple), il apparaît comme « Post d’origine non collecté », avec un lien vers l’original : les réponses ne sont plus présentées comme leur propre parent.
+
+À gauche, la liste se filtre avec les filtres globaux, une recherche dans les réponses, une taille minimale et l’origine (collectée ou non), et se trie par nombre de réponses, de participants, profondeur, likes ou date. À droite, la conversation s’affiche en arbre : chaque réponse sous celle à laquelle elle répond, avec un résumé (réponses, participants, profondeur, durée). Les grandes conversations s’ouvrent repliées au-delà du premier niveau ; « Tout déplier », l’ordre chronologique ou par likes et l’export CSV/JSON sont dans l’en-tête. Depuis l’Explorer, « Voir le thread » ouvre la conversation du post, surligné avec le chemin qui le relie à la racine.
 
 ## Graphes
 

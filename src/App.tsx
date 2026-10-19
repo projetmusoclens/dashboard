@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { BarChart2, MessageSquare, GitBranch, Moon, Sun, CircleHelp } from 'lucide-react';
+import { BarChart2, MessageSquare, GitBranch, Moon, Sun, CircleHelp, Users, KeyRound, LogOut } from 'lucide-react';
 import { TabId, Post, DashboardData } from './types';
 import { dashboardData as initialDashboardData } from './data/dashboardData';
 import api from './services/api';
@@ -8,6 +8,9 @@ import ExplorerTab from './components/ExplorerTab';
 import ThreadsTab from './components/ThreadsTab';
 import GraphsTab from './components/GraphsTab';
 import GuidedTour from './components/GuidedTour';
+import UsersTab from './components/UsersTab';
+import ChangePasswordDialog from './components/ChangePasswordDialog';
+import { useAuth } from './components/AuthGate';
 import DashboardFilters from './components/DashboardFilters';
 import { fmtNum } from './utils/format';
 import { GraphResponse, QueryParams, TimelineResponse } from './services/api';
@@ -18,6 +21,7 @@ const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: 'posts', label: 'Explorer', icon: <MessageSquare size={15} /> },
   { id: 'threads', label: 'Threads', icon: <GitBranch size={15} /> },
   { id: 'graphs', label: 'Graphes', icon: <GitBranch size={15} /> },
+  { id: 'users', label: 'Utilisateurs', icon: <Users size={15} /> },
 ];
 
 // Les graphes chargent jusqu'à 2000 nœuds ; l'onglet Graphes en affiche une partie réglable.
@@ -34,6 +38,10 @@ function normalizeTopAuthors(value: { author: string; count: number }[] | Record
 }
 
 function App() {
+  const { user, logout } = useAuth();
+  const isAdmin = user.role === 'admin';
+  const visibleTabs = TABS.filter((tab) => tab.id !== 'users' || isAdmin);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
   const [dashboardData, setDashboardData] = useState<DashboardData>(initialDashboardData);
@@ -119,11 +127,10 @@ function App() {
       try {
         const params = filters;
 
-        const [stats, posts, tl, threads, hashtagGraph, mentionGraph] = await Promise.all([
+        const [stats, posts, tl, hashtagGraph, mentionGraph] = await Promise.all([
           api.getStats(params),
           api.getPosts({ ...params, limit: 200 }),
           api.getTimeline(params),
-          api.getThreads(params),
           api.getGraph('hashtags', { ...params, maxNodes: GRAPH_MAX_NODES }),
           api.getGraph('mentions', { ...params, maxNodes: GRAPH_MAX_NODES }),
         ]);
@@ -143,7 +150,7 @@ function App() {
           top_viewed: (posts || []).slice().sort((a: Post, b: Post) => (b.engagement.views || 0) - (a.engagement.views || 0)).slice(0, 50),
           posts: posts || [],
           top_authors: normalizeTopAuthors(stats.top_authors),
-          threads,
+          threads: [],
           collections,
           collection_stats: stats.collection_stats,
           engagement_avg: stats.engagement_avg,
@@ -161,13 +168,6 @@ function App() {
     loadFilters();
     return () => { mounted = false; };
   }, [filters, collections]);
-
-  useEffect(() => {
-    if (!selectedPost) return;
-    api.getThreads({ postId: selectedPost.post_id })
-      .then((threads) => setDashboardData((current) => ({ ...current, threads })))
-      .catch((error) => console.error('Thread load error', error));
-  }, [selectedPost]);
 
   const handleSelectPost = (post: Post) => {
     setSelectedPost(post);
@@ -191,7 +191,7 @@ function App() {
         </div>
 
         <nav className="nav">
-          {TABS.map(tab => (
+          {visibleTabs.map(tab => (
             <button
               key={tab.id}
               className={`nav-item ${activeTab === tab.id ? 'active' : ''}`}
@@ -212,8 +212,9 @@ function App() {
             <span>{fmtNum(dashboardData.total_posts)} posts</span>
             <span>{Object.keys(dashboardData.by_platform || {}).join(' / ') || 'Plateformes inconnues'}</span>
           </div>
-          <div className="stat-row">
-            <span>Données MongoDB</span>
+          <div className="sidebar-user">
+            <span className="sidebar-user-name">{user.name}</span>
+            <span className="sidebar-user-role">{isAdmin ? 'Administrateur' : 'Utilisateur'} · {user.username}</span>
           </div>
           <button className="theme-toggle" onClick={() => setDarkMode(!darkMode)}>
             {darkMode ? <Sun size={14} /> : <Moon size={14} />}
@@ -222,6 +223,14 @@ function App() {
           <button className="theme-toggle" onClick={() => setTourOpen(true)}>
             <CircleHelp size={14} />
             Prise en main
+          </button>
+          <button className="theme-toggle" onClick={() => setPasswordOpen(true)}>
+            <KeyRound size={14} />
+            Mon mot de passe
+          </button>
+          <button className="theme-toggle" onClick={logout}>
+            <LogOut size={14} />
+            Se déconnecter
           </button>
         </div>
       </aside>
@@ -235,28 +244,33 @@ function App() {
             <p className="page-sub">
               {activeTab === 'overview' && `${dashboardData.subtitle} · Analyse des données collectées · FIFA World Cup 2026 Opening Ceremony`}
               {activeTab === 'posts' && 'Lire, qualifier et annoter les publications X et Bluesky de la sélection'}
-              {activeTab === 'threads' && (selectedPost ? `Thread de @${selectedPost.author_handle}` : `${dashboardData.threads.length} threads actifs collectés`)}
+              {activeTab === 'threads' && (selectedPost ? `Conversation du post de @${selectedPost.author_handle}` : 'Conversations reconstruites à partir des réponses collectées')}
               {activeTab === 'graphs' && graphSubtitle}
+              {activeTab === 'users' && 'Créer les comptes, attribuer les rôles et désactiver un accès'}
             </p>
-            <DashboardFilters
-              collections={collections}
-              languages={dashboardData.by_lang || {}}
-              selectedCollection={selectedCollection}
-              platform={platform}
-              language={lang}
-              startDate={startDate}
-              endDate={endDate}
-              onCollectionChange={setSelectedCollection}
-              onPlatformChange={setPlatform}
-              onLanguageChange={setLang}
-              onStartDateChange={setStartDate}
-              onEndDateChange={setEndDate}
-            />
-            <div className="page-highlight">
-              <span className="db-dot" />
-              <span>Surveillance claire · points clés mis en avant</span>
-              {loadingWidgets && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Mise à jour...</span>}
-            </div>
+            {activeTab !== 'users' && (
+              <>
+                <DashboardFilters
+                  collections={collections}
+                  languages={dashboardData.by_lang || {}}
+                  selectedCollection={selectedCollection}
+                  platform={platform}
+                  language={lang}
+                  startDate={startDate}
+                  endDate={endDate}
+                  onCollectionChange={setSelectedCollection}
+                  onPlatformChange={setPlatform}
+                  onLanguageChange={setLang}
+                  onStartDateChange={setStartDate}
+                  onEndDateChange={setEndDate}
+                />
+                <div className="page-highlight">
+                  <span className="db-dot" />
+                  <span>Surveillance claire · points clés mis en avant</span>
+                  {loadingWidgets && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Mise à jour...</span>}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -283,10 +297,12 @@ function App() {
               )}
               {activeTab === 'threads' && (
                 <ThreadsTab
-                  threads={dashboardData.threads}
+                  filters={filters}
                   highlightedPost={selectedPost}
+                  onClearHighlight={() => setSelectedPost(null)}
                 />
               )}
+              {activeTab === 'users' && isAdmin && <UsersTab />}
               {activeTab === 'graphs' && (
                 <GraphsTab posts={dashboardData.posts} graphData={graphs || undefined} filters={filters} onGraphChange={setGraphSubtitle} />
               )}
@@ -295,6 +311,7 @@ function App() {
         </div>
       </main>
       <GuidedTour open={tourOpen} onNavigate={setActiveTab} onClose={() => setTourOpen(false)} />
+      {passwordOpen && <ChangePasswordDialog onClose={() => setPasswordOpen(false)} />}
     </div>
   );
 }

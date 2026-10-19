@@ -53,12 +53,31 @@ async function parseArchiveInMemory() {
   console.log(`Parsed ${archivePosts.length} posts from archive.`);
 }
 
+// Index nécessaires aux conversations (post_id, reply_to_id). createIndex ne fait rien si l'index
+// existe déjà : le déploiement les crée sur Atlas au premier démarrage, sans manipulation manuelle.
+const POST_INDEXES = [
+  { key: { post_id: 1 }, name: 'post_id_1' },
+  { key: { reply_to_id: 1 }, name: 'reply_to_id_1' },
+];
+
+async function ensureIndexes(database, label) {
+  if (!database) return;
+  for (const index of POST_INDEXES) {
+    try {
+      await database.collection('posts').createIndex(index.key, { name: index.name });
+    } catch (error) {
+      console.warn(`Index ${index.name} non créé sur ${label} (droits en écriture ?) :`, error?.message || error);
+    }
+  }
+}
+
 async function connectMongo() {
   client = new MongoClient(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true });
   try {
     await client.connect();
     db = client.db(MONGO_DB_NAME);
     console.log(`MongoDB connected to ${MONGO_URI.replace(/\/\/[^@/]*@/, "//***@")}`);
+    await ensureIndexes(db, MONGO_DB_NAME);
   } catch (error) {
     db = null;
     console.warn('MongoDB connect failed; attempting archive-only mode.', error?.message || error);
@@ -76,6 +95,7 @@ async function connectMongo() {
     if (stdout) console.log('mongorestore stdout:', stdout.slice(0, 2000));
     if (stderr) console.warn('mongorestore stderr:', stderr.slice(0, 2000));
     archiveDb = client.db(ARCHIVE_DB_NAME);
+    await ensureIndexes(archiveDb, ARCHIVE_DB_NAME);
   } catch (error) {
     console.warn('mongorestore failed; attempting direct archive parsing:', error?.message || error);
     try {

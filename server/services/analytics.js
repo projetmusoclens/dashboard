@@ -1,4 +1,5 @@
 const { collectionKey, normalizeCollectionName } = require('./collections');
+const { missingRoot } = require('./conversations');
 
 // Hashtags Unicode (#España, #كأس_العالم) : le motif Mongo des statistiques suit la même règle.
 const HASHTAG_PATTERN = /#[\p{L}\p{N}_]+/gu;
@@ -43,8 +44,10 @@ function buildThreads(posts) {
       visited.add(String(root.post_id));
       root = byId.get(String(root.reply_to_id));
     }
-    const rootId = String(root.post_id);
-    if (!grouped.has(rootId)) grouped.set(rootId, { parent: root, replies: [] });
+    // Parent absent de la base : la réponse est rattachée à ce parent manquant, pas à elle-même.
+    const rootId = root.reply_to_id ? String(root.reply_to_id) : String(root.post_id);
+    const parent = root.reply_to_id ? { ...missingRoot(rootId, root), text: '', engagement: {}, matched_keywords: [] } : root;
+    if (!grouped.has(rootId)) grouped.set(rootId, { parent, replies: [] });
     grouped.get(rootId).replies.push(reply);
   });
   return Array.from(grouped.values()).sort((left, right) => right.replies.length - left.replies.length);

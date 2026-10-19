@@ -1,4 +1,4 @@
-// Annotations de l'Explorer, stockées dans le navigateur (localStorage), par plateforme et identifiant de post.
+// Annotations de l'Explorer : types et libellés. Le stockage local ne sert plus qu'à reprendre les annotations faites avant les comptes.
 export interface Annotation {
   status: 'a_analyser' | 'analyse' | 'a_discuter';
   relevance: '' | 'oui' | 'non' | 'incertain';

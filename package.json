@@ -35,7 +35,7 @@
     "start": "react-scripts start",
     "server": "node server/index.js",
     "dev": "concurrently \"npm run server\" \"npm start\"",
-    "test:server": "node --test server/services/collections.test.js server/services/analytics.test.js server/middleware/auth.test.js",
+    "test:server": "node --test server/services/collections.test.js server/services/analytics.test.js server/services/conversations.test.js server/middleware/auth.test.js server/routes/accounts.test.js",
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject"

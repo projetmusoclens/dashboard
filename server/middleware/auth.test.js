@@ -1,42 +1,65 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createPasswordAuth } = require('./auth');
+const { createFailureLimiter, createUserAuth, requireAdmin } = require('./auth');
+const { createMemoryStore, createToken } = require('../services/accounts');
 
-function run(middleware, { authorization, method = 'GET', ip = '1.2.3.4' } = {}) {
+async function run(middleware, { authorization, method = 'GET' } = {}) {
   const result = { status: 200, nextCalled: false };
-  const req = { method, ip, get: (name) => (name === 'authorization' ? authorization : undefined) };
+  const req = { method, get: (name) => (name === 'authorization' ? authorization : undefined) };
   const res = {
     status(code) { result.status = code; return this; },
     json(body) { result.body = body; return this; },
   };
-  middleware(req, res, () => { result.nextCalled = true; });
+  await middleware(req, res, () => { result.nextCalled = true; });
+  result.user = req.user;
   return result;
 }
 
-test('lets every request through when no password is configured', () => {
-  assert.equal(run(createPasswordAuth('')).nextCalled, true);
+async function setup() {
+  const store = createMemoryStore();
+  const user = await store.insertUser({ username: 'alice', role: 'annotateur', active: true, token_version: 0, password_hash: 'x' });
+  return { store, user, auth: createUserAuth({ getStore: () => store, secret: 's3cret' }) };
+}
+
+test('accepts a valid token and exposes the user', async () => {
+  const { user, auth } = await setup();
+  const result = await run(auth, { authorization: `Bearer ${createToken(user, 's3cret')}` });
+  assert.equal(result.nextCalled, true);
+  assert.equal(result.user.username, 'alice');
 });
 
-test('accepts the right password and rejects a wrong or missing one', () => {
-  const auth = createPasswordAuth('secret');
-  assert.equal(run(auth, { authorization: 'Bearer secret' }).nextCalled, true);
-  assert.equal(run(auth, { authorization: 'Bearer nope' }).status, 401);
-  assert.equal(run(auth).status, 401);
+test('rejects missing, forged, expired and revoked tokens', async () => {
+  const { store, user, auth } = await setup();
+  assert.equal((await run(auth)).status, 401);
+  assert.equal((await run(auth, { authorization: `Bearer ${createToken(user, 'other')}` })).status, 401);
+  assert.equal((await run(auth, { authorization: `Bearer ${createToken(user, 's3cret', Date.now() - 8 * 24 * 3600 * 1000)}` })).status, 401);
+  const token = createToken(user, 's3cret');
+  await store.updateUser(user.id, { token_version: 1 });
+  auth.forget(user.id);
+  assert.equal((await run(auth, { authorization: `Bearer ${token}` })).status, 401);
 });
 
-test('lets CORS preflight requests through without a password', () => {
-  assert.equal(run(createPasswordAuth('secret'), { method: 'OPTIONS' }).nextCalled, true);
+test('lets CORS preflight requests through', async () => {
+  const { auth } = await setup();
+  assert.equal((await run(auth, { method: 'OPTIONS' })).nextCalled, true);
+});
+
+test('restricts admin routes to administrators', () => {
+  const res = { status(code) { this.code = code; return this; }, json() { return this; } };
+  requireAdmin({ user: { role: 'annotateur' } }, res, () => assert.fail('should not pass'));
+  assert.equal(res.code, 403);
+  let passed = false;
+  requireAdmin({ user: { role: 'admin' } }, res, () => { passed = true; });
+  assert.equal(passed, true);
 });
 
 test('blocks an address after repeated failures, then forgets it', () => {
   let clock = 0;
-  const auth = createPasswordAuth('secret', { now: () => clock });
-  for (let i = 0; i < 10; i += 1) run(auth, { authorization: 'Bearer nope' });
-
-  assert.equal(run(auth, { authorization: 'Bearer secret' }).status, 429);
-  assert.equal(run(auth, { authorization: 'Bearer secret', ip: '5.6.7.8' }).nextCalled, true);
-
+  const limiter = createFailureLimiter({ now: () => clock });
+  for (let i = 0; i < 10; i += 1) limiter.fail('1.2.3.4');
+  assert.equal(limiter.isBlocked('1.2.3.4'), true);
+  assert.equal(limiter.isBlocked('5.6.7.8'), false);
   clock = 16 * 60 * 1000;
-  assert.equal(run(auth, { authorization: 'Bearer secret' }).nextCalled, true);
+  assert.equal(limiter.isBlocked('1.2.3.4'), false);
 });

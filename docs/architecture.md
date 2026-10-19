@@ -14,6 +14,11 @@ Les routes lisent et valident les paramètres, les services normalisent les docu
 | `server/db/data-source.js` | Configuration MongoDB, connexion, choix de source et restauration/lecture d’archive. |
 | `server/routes/posts.js` | Routes `/api/dashboard`, `/api/posts` (pagination `limit`/`skip`, tri `sort`), `/api/threads` et `/api/collection-runs`. |
 | `server/routes/analytics.js` | Routes `/api/stats`, `/api/graph`, `/api/stats/timeline` (pas adaptatif) et `POST /api/graph/subgraph` (posts d’un sous-graphe). |
+| `server/routes/conversations.js` | Routes `/api/conversations` (liste paginée, mise en cache par filtres) et `/api/conversation` (arbre complet depuis une racine ou un post). |
+| `server/routes/accounts.js` | Connexion, compte courant, gestion des utilisateurs (admin) et annotations (`/api/annotations`, import, export). |
+| `server/services/conversations.js` | Rattachement des réponses à leur racine (collectée ou manquante) et résumés de conversations. |
+| `server/services/accounts.js` | Hachage scrypt, jetons signés HMAC, validation, stockage MongoDB ou mémoire, création du premier admin. |
+| `server/middleware/auth.js` | Vérification du jeton de session, rôle admin et limitation des échecs de connexion. |
 | `server/routes/collections.js` | Route `/api/collections`, avec agrégation côté Mongo ou regroupement du fallback archive. |
 | `server/services/normalization.js` | Forme canonique des posts, du contexte de collecte, des dates et des médias. |
 | `server/services/collections.js` | Identité, regroupement et expressions Mongo des collectes. |
@@ -37,9 +42,12 @@ La clé est dérivée des données : il n’existe pas de liste codée en dur ni
 | `src/App.css` et `src/index.css` | Mise en page et styles globaux. |
 | `src/components/OverviewTab.tsx` | Indicateurs et graphiques de synthèse. |
 | `src/components/ExplorerTab.tsx` | Lecteur-annotateur : liste filtrable, lecture, détails, annotation locale, import JSONL et exports. |
-| `src/components/ThreadsTab.tsx` | Affichage des conversations. |
 | `src/components/GraphsTab.tsx` | Rendu Sigma, spatialisation, voisinage, sélection et export de sous-graphe. |
 | `src/components/DashboardFilters.tsx` | Contrôles partagés de collecte, plateforme, langue et période. |
+| `src/components/ThreadsTab.tsx` | Liste des conversations et lecture en arbre, export d’une conversation. |
+| `src/components/AuthGate.tsx` | Écran de connexion et contexte de l’utilisateur connecté (`useAuth`). |
+| `src/components/UsersTab.tsx` | Gestion des comptes (administrateurs). |
+| `src/components/ChangePasswordDialog.tsx` | Changement de son mot de passe. |
 | `src/components/GuidedTour.tsx` | Tour guidé relançable et navigation entre les vues. |
 | `src/components/KpiCard.tsx` | Carte réutilisable d’indicateur. |
 | `src/services/api.ts` | Fonctions HTTP et types de réponse API. |
@@ -68,3 +76,6 @@ La clé est dérivée des données : il n’existe pas de liste codée en dur ni
 Placez le traitement HTTP dans le module `server/routes` concerné. Gardez les conversions de schéma dans `normalization.js` et les calculs purs réutilisables dans `services/analytics.js`; adaptez en parallèle les chemins Mongo et archive, puis ajoutez un test `node:test` couvrant les deux modes quand ils divergent.
 
 Ajoutez toute nouvelle variable backend à `server/.env.example` et au tableau du README. N’ajoutez aucun identifiant réel au dépôt. Après une modification : `npm run test:server`, les tests React et `npm run build`.
+## Index MongoDB
+
+Au démarrage, l’API crée si besoin les index `posts.post_id`, `posts.reply_to_id`, `users.username` (unique) et `annotations.{user_id, platform, post_id}` (unique). `createIndex` est sans effet quand l’index existe : un déploiement les crée donc sur Atlas sans manipulation. Si l’utilisateur Atlas n’a pas les droits d’écriture, un avertissement est journalisé et l’API continue (conversations plus lentes).

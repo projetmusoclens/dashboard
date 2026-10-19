@@ -92,4 +92,4 @@ export interface DashboardData {
 export type SortKey = 'likes' | 'views' | 'reposts' | 'replies';
 export type PostSort = SortKey | 'date';
 export type PostKind = 'original' | 'reply' | 'retweet' | 'quote';
-export type TabId = 'overview' | 'posts' | 'threads' | 'graphs';
+export type TabId = 'overview' | 'posts' | 'threads' | 'graphs' | 'users';
