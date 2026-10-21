@@ -109,7 +109,13 @@ connectMongo().then(async () => {
   } else {
     console.warn('No MongoDB: user accounts and annotations are kept in memory and lost on restart.');
   }
-  await bootstrapAdmin(accountStore, { username: (process.env.ADMIN_USERNAME || '').trim().toLowerCase(), password: process.env.ADMIN_PASSWORD, name: process.env.ADMIN_NAME });
+  // Un échec ici (droits Atlas en lecture seule, par exemple) ne doit pas empêcher l'API de démarrer.
+  try {
+    await bootstrapAdmin(accountStore, { username: (process.env.ADMIN_USERNAME || '').trim().toLowerCase(), password: process.env.ADMIN_PASSWORD, name: process.env.ADMIN_NAME });
+  } catch (error) {
+    console.error(`Administrateur initial non créé : ${error?.message || error}. `
+      + 'Vérifiez que l’utilisateur MongoDB de l’API a le rôle readWrite sur la base ; sans écriture, personne ne peut se connecter ni annoter.');
+  }
 
   const server = app.listen(PORT, () => {
     console.log(`Backend server listening on http://localhost:${PORT}`);
