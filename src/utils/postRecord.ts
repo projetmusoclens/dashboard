@@ -194,6 +194,8 @@ function blueskyRecord(post: Post): PostRecord {
     if (type.endsWith('#link') && feature.uri) urls.push(feature.uri);
   }));
   const engagement: any = post.engagement || {};
+  // Nom, pseudo et avatar fournis par l'API (résolus auprès de Bluesky à partir du DID).
+  const profile = post.author_profile || null;
   return {
     post,
     platform: 'bluesky',
@@ -205,13 +207,13 @@ function blueskyRecord(post: Post): PostRecord {
     source: 'Bluesky',
     collection: post.collection_name,
     author: {
-      name: handle && !handle.startsWith('did:') ? handle : 'Compte Bluesky',
-      handle: shortDid(handle),
-      avatar: '',
+      name: profile?.display_name || profile?.handle || (handle && !handle.startsWith('did:') ? handle : 'Compte Bluesky'),
+      handle: profile?.handle ? `@${profile.handle}` : shortDid(handle),
+      avatar: profile?.avatar || '',
       verified: false,
       id: did,
     },
-    url: bskyPostUrl(String(post.post_id), handle && !handle.startsWith('did:') ? handle : did),
+    url: bskyPostUrl(String(post.post_id), profile?.handle || (handle && !handle.startsWith('did:') ? handle : did)),
     isReply: Boolean(post.is_reply),
     isRetweet: Boolean(post.is_retweet),
     isQuote: Boolean(post.is_quote),

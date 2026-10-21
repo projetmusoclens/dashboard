@@ -30,6 +30,10 @@ test('builds a reader record from a Bluesky post and repost', () => {
   expect(post.media[0].url).toBe(`https://cdn.bsky.app/img/feed_fullsize/plain/${did}/cid1@png`);
   expect(post.entities.hashtags).toEqual(['#wc']);
   expect(post.metrics.like).toBeNull();
+  expect(post.author.name).toBe('Compte Bluesky');
+  const named = toRecord({ ...basePost, platform: 'bluesky', post_id: `at://${did}/app.bsky.feed.post/3k`, author_handle: did, author_id: did, author_profile: { handle: 'alice.bsky.social', display_name: 'Alice', avatar: 'https://cdn.bsky.app/a.jpg' }, raw_json: {} });
+  expect(named.author).toMatchObject({ name: 'Alice', handle: '@alice.bsky.social', avatar: 'https://cdn.bsky.app/a.jpg' });
+  expect(named.url).toBe('https://bsky.app/profile/alice.bsky.social/post/3k');
   const repost = toRecord({ ...basePost, platform: 'bluesky', text: '', is_retweet: true, subject_uri: `at://${did}/app.bsky.feed.post/9z`, raw_json: { record: { $type: 'app.bsky.feed.repost' } } });
   expect(repost.isRetweet).toBe(true);
   expect(repost.repostOf).toBe(`at://${did}/app.bsky.feed.post/9z`);

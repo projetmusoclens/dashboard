@@ -27,7 +27,7 @@ function cached(key, compute) {
   return value;
 }
 
-function registerConversationRoutes(app, { getDataSource, normalizePost, buildMatchFromQuery, safeHandler }) {
+function registerConversationRoutes(app, { getDataSource, normalizePost, buildMatchFromQuery, safeHandler, profiles }) {
   // Posts connus = réponses correspondant aux filtres + tous leurs ancêtres présents en base.
   async function knownPostsFromMongo(db, filters) {
     const posts = db.collection('posts');
@@ -103,7 +103,9 @@ function registerConversationRoutes(app, { getDataSource, normalizePost, buildMa
       limit: Math.min(Math.max(Number(req.query.limit) || 20, 1), PAGE_MAX),
       skip: Math.max(Number(req.query.skip) || 0, 0),
     });
-    return res.json({ ...page, items: await hydrate(dataSource, page.items) });
+    const items = await hydrate(dataSource, page.items);
+    await profiles.enrichPosts(items.map((item) => (item.root_missing ? null : item.root)));
+    return res.json({ ...page, items });
   }));
 
   // Une conversation complète, depuis sa racine (rootId) ou depuis n'importe lequel de ses posts (postId).
@@ -141,6 +143,7 @@ function registerConversationRoutes(app, { getDataSource, normalizePost, buildMa
       } else posts.push(...children);
       frontier = children.map((post) => post.post_id);
     }
+    await profiles.enrichPosts([root, ...posts]);
     return res.json({
       root_id: rootId,
       root_missing: !root,

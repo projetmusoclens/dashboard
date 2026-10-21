@@ -70,3 +70,17 @@ test('posts paging keeps the historical default and caps the limit', () => {
   assert.equal(postsPage({ sort: 'date' }).sort.field, 'timestamp');
   assert.equal(postsPage({ sort: 'nope' }).sort.field, 'engagement.likes');
 });
+
+test('uses Bluesky facet DIDs for mentions and keeps edge totals', () => {
+  const bluesky = normalizePost({
+    platform: 'bluesky', post_id: 'at://did:plc:a/app.bsky.feed.post/1', author_handle: 'did:plc:a', text: 'coucou @bob.bsky.social',
+    raw_json: { $type: 'app.bsky.feed.post', facets: [{ features: [{ $type: 'app.bsky.richtext.facet#mention', did: 'did:plc:b' }] }] },
+  });
+  const graph = buildGraphFromPosts([bluesky], 'mentions');
+  assert.deepEqual(graph.nodes.map((node) => node.id).sort(), ['@did:plc:a', '@did:plc:b']);
+  const tweets = ['#a #b', '#a #b', '#a #c'].map((text) => normalizePost({ platform: 'twitter', text }));
+  const filtered = buildGraphFromPosts(tweets, 'hashtags', Infinity, { minEdgeWeight: 2 });
+  assert.deepEqual(filtered.links, [{ source: '#a', target: '#b', value: 2 }]);
+  assert.equal(filtered.total_nodes, 3);
+  assert.equal(filtered.total_links, 2);
+});

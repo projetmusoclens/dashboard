@@ -4,8 +4,7 @@ import {
   XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineChart, Line, Legend,
 } from 'recharts';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { DashboardData } from '../types';
-import { TimelineResponse } from '../services/api';
+import { DashboardData, TimelineResponse } from '../types';
 import { CHART_COLORS } from '../data/dashboardData';
 import KpiCard from './KpiCard';
 import { fmtNum } from '../utils/format';
@@ -63,6 +62,9 @@ const LanguageTooltip: React.FC<any> = ({ active, payload, total }) => {
 
 const OverviewTab: React.FC<OverviewTabProps> = ({ data, selectedCollection = '', timeline = null }) => {
   const [typeSlide, setTypeSlide] = useState(0);
+  // Seuils du regroupement « Autres » : part minimale d'une langue et nombre maximal de parts.
+  const [langMinShare, setLangMinShare] = useState(0.01);
+  const [langMaxSlices, setLangMaxSlices] = useState(9);
 
   // Seules les plateformes réellement présentes dans la sélection sont affichées.
   const platformCounts = data.by_platform || {};
@@ -74,7 +76,7 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, selectedCollection = ''
   const timelinePlatforms = (timeline?.platforms || []).filter((platform) => timelinePoints.some((point) => Number(point[platform]) > 0));
   const bucketMinutes = timeline?.bucket_minutes || 60;
 
-  const langData = groupLanguages(data.by_lang);
+  const langData = groupLanguages(data.by_lang, { minShare: langMinShare, maxSlices: langMaxSlices });
   const langTotal = langData.reduce((sum, slice) => sum + slice.value, 0);
   const langColor = (slice: LanguageSlice, index: number) => slice.key === '__others__' ? OTHERS_COLOR : CHART_COLORS[index % CHART_COLORS.length];
 
@@ -204,7 +206,19 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, selectedCollection = ''
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
         <div style={cardStyle}>
-          <h3 style={titleStyle}>Répartition par langue</h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: '1rem' }}>
+            <h3 style={{ ...titleStyle, marginBottom: 0 }}>Répartition par langue</h3>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)' }}>
+              <label htmlFor="lang-min-share">Seuil</label>
+              <select id="lang-min-share" value={langMinShare} onChange={(event) => setLangMinShare(Number(event.target.value))} style={{ fontSize: 11, padding: '3px 6px', borderRadius: 6 }}>
+                {[0, 0.002, 0.005, 0.01, 0.02, 0.05].map((value) => <option key={value} value={value}>{value === 0 ? 'aucun' : `${value * 100} %`}</option>)}
+              </select>
+              <label htmlFor="lang-max-slices">Langues</label>
+              <select id="lang-max-slices" value={langMaxSlices} onChange={(event) => setLangMaxSlices(Number(event.target.value))} style={{ fontSize: 11, padding: '3px 6px', borderRadius: 6 }}>
+                {[5, 9, 12, 15].map((value) => <option key={value} value={value}>{value} max.</option>)}
+              </select>
+            </div>
+          </div>
           <ResponsiveContainer width="100%" height={200}>
             <PieChart>
               <Pie data={langData} cx="50%" cy="50%" outerRadius={80} dataKey="value" labelLine={false} label={renderCustomLabel} isAnimationActive={false}>
@@ -223,7 +237,7 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, selectedCollection = ''
           </div>
           {langData.some((slice) => slice.details) && (
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
-              « Autres » regroupe les codes non identifiés (qme, und, zxx…) et les langues sous 1 % ; survolez-la pour le détail.
+              « Autres » regroupe les codes non identifiés (qme, und, zxx…), les langues sous le seuil choisi et celles au-delà du nombre maximal ; survolez-la pour le détail.
             </div>
           )}
         </div>

@@ -1,31 +1,23 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-// Use Sigma.js + graphology ; les layouts sont dans utils/graphLayouts.
+// Rendu Sigma.js (WebGL) sur un graphe graphology ; dispositions dans utils/graphLayouts.
 // @ts-ignore
 import Graph from 'graphology';
-import { Post } from '../types';
-import api, { QueryParams } from '../services/api';
+import { GraphResponse, GraphType, QueryParams } from '../types';
+import api from '../services/api';
 import { fmtNum } from '../utils/format';
 import { CHART_COLORS } from '../data/dashboardData';
-import { bfsDistances, computeLayout, detectCommunities, LARGE_GRAPH_NODES, LAYOUTS, LayoutId, layoutUsesFocus } from '../utils/graphLayouts';
+import { GRAPH_DEFAULT_NODES, GRAPH_MAX_NODES } from '../config';
+import {
+  bfsDistances, computeLayout, DEFAULT_LAYOUT_PARAMS, detectCommunities, LARGE_GRAPH_NODES, LAYOUT_PARAM_KEYS, LAYOUTS,
+  LayoutId, LayoutParams, layoutUsesFocus, runBackgroundLayout, usesBackgroundLayout,
+} from '../utils/graphLayouts';
 import { buildSubgraph, edgesToCsv, nodesToCsv, postsToCsv, SubgraphMeta, subgraphToGexf } from '../utils/subgraphExport';
 import { downloadFile, fileSlug } from '../utils/download';
 
 interface GraphsTabProps {
-  posts: Post[];
-  graphData?: {
-    hashtags: { nodes: { id: string; label: string; value: number }[]; links: GraphEdge[] };
-    mentions: { nodes: { id: string; label: string; value: number }[]; links: GraphEdge[] };
-  };
   filters?: QueryParams;
-  onGraphChange?: (subtitle: string) => void;
 }
 
-type GraphType = 'mentions' | 'hashtags';
-
-type SeriesItem = { name: string; value: number };
-type GraphNode = { id: string; label: string; value: number; color: string; type?: 'author' | 'mention' };
-type GraphEdge = { source: string; target: string; value: number };
-type GraphData = { summary: SeriesItem[]; relations: SeriesItem[] };
 type NeighborItem = { id: string; label: string; distance: number; value: number; degree: number; weight: number | null };
 
 const SELECTED_COLOR = '#e34948';
@@ -48,14 +40,13 @@ const hslToHex = (hue: number, saturation: number, lightness: number) => {
   return `#${channel(0)}${channel(8)}${channel(4)}`;
 };
 
+// Couleur stable par identifiant de nœud.
 const colorForId = (id: string) => {
-  // deterministic HSL color based on id
   let h = 0;
   for (let i = 0; i < id.length; i += 1) {
     h = (h * 31 + id.charCodeAt(i)) >>> 0;
   }
   const hue = h % 360;
-  // authors/mentions get bluish-green palette depending on prefix
   if (id.startsWith('@')) return hslToHex(hue, 60, 48);
   if (id.startsWith('#')) return hslToHex((hue + 80) % 360, 60, 42);
   return hslToHex(hue, 50, 45);
@@ -63,154 +54,13 @@ const colorForId = (id: string) => {
 
 const edgeSizeForWeight = (w: number | undefined) => {
   const v = typeof w === 'number' ? w : Number(w) || 1;
-  // use a log scale to avoid huge sizes; clamp to reasonable range
+  // Échelle logarithmique pour éviter des arêtes démesurées.
   const size = Math.log(v + 1) * 1.8;
   return Math.max(0.6, Math.min(10, size));
 };
 
-const parseMentions = (text: string) =>
-  Array.from(text.matchAll(/@([A-Za-z0-9_]+)/g)).map(match => match[1].toLowerCase());
-
-// Même règle Unicode que le backend (server/services/analytics.js).
-const parseHashtags = (text: string) =>
-  Array.from(text.matchAll(/#([\p{L}\p{N}_]+)/gu)).map(match => match[1].toLowerCase());
-
-const topItems = (map: Map<string, number>, limit: number = 15) =>
-  Array.from(map.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([name, value]) => ({ name, value }));
-
-const buildMentionStats = (posts: Post[]): GraphData => {
-  const mentionCounts = new Map<string, number>();
-  const relationCounts = new Map<string, number>();
-
-  posts.forEach(post => {
-    parseMentions(post.text).forEach(mention => {
-      const formattedMention = `@${mention}`;
-      mentionCounts.set(formattedMention, (mentionCounts.get(formattedMention) || 0) + 1);
-      const edgeKey = `${post.author_handle.toLowerCase()} → ${formattedMention}`;
-      relationCounts.set(edgeKey, (relationCounts.get(edgeKey) || 0) + 1);
-    });
-  });
-
-  return {
-    summary: topItems(mentionCounts),
-    relations: topItems(relationCounts),
-  };
-};
-
-const buildHashtagStats = (posts: Post[]): GraphData => {
-  const hashtagCounts = new Map<string, number>();
-  const pairCounts = new Map<string, number>();
-
-  posts.forEach(post => {
-    const hashtags = Array.from(new Set(parseHashtags(post.text))).map(tag => `#${tag}`);
-
-    hashtags.forEach(tag => {
-      hashtagCounts.set(tag, (hashtagCounts.get(tag) || 0) + 1);
-    });
-
-    for (let i = 0; i < hashtags.length; i += 1) {
-      for (let j = i + 1; j < hashtags.length; j += 1) {
-        const pair = [hashtags[i], hashtags[j]].sort().join(' · ');
-        pairCounts.set(pair, (pairCounts.get(pair) || 0) + 1);
-      }
-    }
-  });
-
-  return {
-    summary: topItems(hashtagCounts),
-    relations: topItems(pairCounts),
-  };
-};
-
-const buildHashtagGraph = (posts: Post[]): { nodes: GraphNode[]; links: GraphEdge[] } => {
-  const hashtagCounts = new Map<string, number>();
-  const pairCounts = new Map<string, number>();
-
-  posts.forEach(post => {
-    const hashtags = Array.from(new Set(parseHashtags(post.text))).map(tag => `#${tag}`);
-    hashtags.forEach(tag => {
-      hashtagCounts.set(tag, (hashtagCounts.get(tag) || 0) + 1);
-    });
-
-    for (let i = 0; i < hashtags.length; i += 1) {
-      for (let j = i + 1; j < hashtags.length; j += 1) {
-        const pair = [hashtags[i], hashtags[j]].sort().join(' · ');
-        pairCounts.set(pair, (pairCounts.get(pair) || 0) + 1);
-      }
-    }
-  });
-
-  const nodes = Array.from(hashtagCounts.entries()).map(([name, value]) => ({
-    id: name,
-    label: name,
-    value,
-    color: colorForId(name),
-  }));
-
-  const links = Array.from(pairCounts.entries()).map(([name, value]) => {
-    const [left, right] = name.split(' · ');
-    return { source: left, target: right, value };
-  });
-
-  return { nodes, links };
-};
-
-const buildMentionGraph = (posts: Post[]): { nodes: GraphNode[]; links: GraphEdge[] } => {
-  const mentionCounts = new Map<string, number>();
-  const relationCounts = new Map<string, number>();
-
-  posts.forEach(post => {
-    const author = `@${post.author_handle.toLowerCase()}`;
-    parseMentions(post.text).forEach(mention => {
-      const formattedMention = `@${mention}`;
-      mentionCounts.set(formattedMention, (mentionCounts.get(formattedMention) || 0) + 1);
-      const edgeKey = `${author} → ${formattedMention}`;
-      relationCounts.set(edgeKey, (relationCounts.get(edgeKey) || 0) + 1);
-    });
-  });
-
-  const sortedRelations = Array.from(relationCounts.entries()).sort((a, b) => b[1] - a[1]);
-  const nodesMap = new Map<string, GraphNode>();
-  const links: GraphEdge[] = [];
-
-  sortedRelations.forEach(([relationName, value]) => {
-    const [author, mention] = relationName.split(' → ');
-    if (!author || !mention) return;
-
-    if (!nodesMap.has(author)) {
-      nodesMap.set(author, {
-        id: author,
-        label: author,
-        value: Math.max(4, value),
-        color: '#5f8ae2',
-        type: 'author',
-      });
-    }
-
-    if (!nodesMap.has(mention)) {
-      nodesMap.set(mention, {
-        id: mention,
-        label: mention,
-        value: Math.max(5, mentionCounts.get(mention) || 1),
-        color: colorForId(mention),
-        type: 'mention',
-      });
-    }
-
-    links.push({
-      source: author,
-      target: mention,
-      value,
-    });
-  });
-
-  return { nodes: Array.from(nodesMap.values()), links };
-};
-
-const layoutKey = (layout: LayoutId, spacing: number, focus: string | null) => `${layout}|${spacing}|${layoutUsesFocus(layout) ? focus : ''}`;
+const paramsKey = (layout: LayoutId, params: LayoutParams) => JSON.stringify(LAYOUT_PARAM_KEYS[layout].map((key) => params[key]));
+const layoutKey = (layout: LayoutId, params: LayoutParams, focus: string | null) => `${layout}|${paramsKey(layout, params)}|${layoutUsesFocus(layout) ? focus : ''}`;
 
 const cardStyle: React.CSSProperties = { background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 16, padding: 16 };
 const cardTitleStyle: React.CSSProperties = { fontSize: 12, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 8 };
@@ -225,16 +75,38 @@ const pillButton = (active: boolean, color = '#1d9e75'): React.CSSProperties => 
 });
 const smallButton: React.CSSProperties = { padding: '5px 9px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: 12, fontWeight: 600 };
 const inputStyle: React.CSSProperties = { padding: '6px 8px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--input-bg)', color: 'var(--text-primary)' };
+const paramLabelStyle: React.CSSProperties = { display: 'grid', gap: 4, fontSize: 12, color: 'var(--text-secondary)' };
 
-const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, onGraphChange }) => {
+// Définition des contrôles de « Paramètres avancés ».
+const PARAM_CONTROLS: Record<keyof LayoutParams, { label: string; help: string; kind: 'range' | 'checkbox' | 'select'; min?: number; max?: number; step?: number; options?: [string, string][] }> = {
+  spacing: { label: 'Espacement', help: 'ForceAtlas2 : facteur d’échelle ; force : répulsion ; anneaux et niveaux : écart.', kind: 'range', min: 0.3, max: 5, step: 0.1 },
+  gravity: { label: 'Gravité', help: 'Attraction vers le centre : plus haut, graphe plus compact.', kind: 'range', min: 0, max: 3, step: 0.05 },
+  strongGravity: { label: 'Gravité forte', help: 'Ramène les composantes isolées vers le centre.', kind: 'checkbox' },
+  linLog: { label: 'Mode LinLog', help: 'Sépare davantage les communautés.', kind: 'checkbox' },
+  edgeWeightInfluence: { label: 'Influence des poids', help: '0 : poids ignorés ; 1 : les liens fréquents rapprochent davantage.', kind: 'range', min: 0, max: 2, step: 0.1 },
+  barnesHut: { label: 'Approximation Barnes-Hut', help: 'Accélère les grands graphes au prix d’un peu de précision.', kind: 'select', options: [['auto', 'Auto (> 500 nœuds)'], ['on', 'Activée'], ['off', 'Désactivée']] },
+  durationSec: { label: 'Durée du calcul (s)', help: 'Temps laissé à l’algorithme ; plus long = plus stable.', kind: 'range', min: 1, max: 20, step: 1 },
+  noverlapMargin: { label: 'Marge anti-chevauchement', help: 'Distance minimale entre nœuds après ForceAtlas2.', kind: 'range', min: 0, max: 10, step: 0.5 },
+  resolution: { label: 'Résolution Louvain', help: 'Plus haut = plus de communautés, plus petites.', kind: 'range', min: 0.2, max: 3, step: 0.1 },
+};
+
+const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
   const [activeGraph, setActiveGraph] = useState<GraphType>('hashtags');
   const [layout, setLayout] = useState<LayoutId>('forceatlas2');
+  const [params, setParams] = useState<LayoutParams>(DEFAULT_LAYOUT_PARAMS);
+  const [appliedParams, setAppliedParams] = useState<LayoutParams>(DEFAULT_LAYOUT_PARAMS);
+  const [paramsOpen, setParamsOpen] = useState(false);
   const [layoutBusy, setLayoutBusy] = useState(false);
   const [colorByCommunity, setColorByCommunity] = useState(false);
   const [showEdges, setShowEdges] = useState(true);
-  const [nodeLimit, setNodeLimit] = useState<number>(300);
+  const [nodeLimitInput, setNodeLimitInput] = useState<number>(GRAPH_DEFAULT_NODES);
+  const [nodeLimit, setNodeLimit] = useState<number>(GRAPH_DEFAULT_NODES);
+  const [minEdgeInput, setMinEdgeInput] = useState<number>(1);
+  const [minEdgeWeight, setMinEdgeWeight] = useState<number>(1);
   const [minNodeValue, setMinNodeValue] = useState<number>(1);
-  const [spacing, setSpacing] = useState<number>(1);
+  const [graphData, setGraphData] = useState<GraphResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [graphVersion, setGraphVersion] = useState(0);
   const [focusNode, setFocusNode] = useState<string | null>(null);
   const [depth, setDepth] = useState(1);
@@ -247,44 +119,52 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
   const sigmaRef = useRef<any>(null);
   const graphRef = useRef<any>(null);
   const appliedLayoutRef = useRef('');
-  const cancelAnimationRef = useRef<(() => void) | null>(null);
-  const layoutRef = useRef(layout);
-  const spacingRef = useRef(spacing);
-  const focusRef = useRef(focusNode);
-  layoutRef.current = layout;
-  spacingRef.current = spacing;
-  focusRef.current = focusNode;
+  const stopLayoutRef = useRef<(() => void) | null>(null);
+  const cacheRef = useRef(new Map<string, GraphResponse>());
 
-  const mentionStats = useMemo(() => buildMentionStats(posts), [posts]);
-  const hashtagStats = useMemo(() => buildHashtagStats(posts), [posts]);
-  const hashtagGraph = useMemo(() => buildHashtagGraph(posts), [posts]);
-  const mentionGraph = useMemo(() => buildMentionGraph(posts), [posts]);
-
-  const currentGraph = useMemo(() => {
-    const external = activeGraph === 'mentions' ? graphData?.mentions : graphData?.hashtags;
-    if (!external) return activeGraph === 'mentions' ? mentionGraph : hashtagGraph;
-    return {
-      nodes: external.nodes.map((node) => ({ ...node, color: colorForId(node.id), type: activeGraph === 'mentions' ? 'mention' as const : undefined })),
-      links: external.links,
-    };
-  }, [activeGraph, graphData, hashtagGraph, mentionGraph]);
-  const filteredGraph = useMemo(() => {
-    const nodes = currentGraph.nodes
-      .filter(n => n.value >= minNodeValue)
-      .sort((a, b) => b.value - a.value)
-      .slice(0, nodeLimit);
-
-    const nodeIds = new Set(nodes.map(n => n.id));
-    const links = currentGraph.links.filter(l => nodeIds.has(l.source) && nodeIds.has(l.target) && l.value >= minNodeValue);
-
-    return { nodes, links };
-  }, [currentGraph, nodeLimit, minNodeValue]);
-
-  const selectedTitle = activeGraph === 'mentions' ? 'Relations de mentions' : 'Graph global des hashtags';
-
+  // Les champs numériques et les curseurs ne relancent le chargement ou le calcul qu'une fois la saisie terminée.
   useEffect(() => {
-    onGraphChange?.(selectedTitle);
-  }, [selectedTitle, onGraphChange]);
+    const timer = window.setTimeout(() => {
+      setNodeLimit(Math.min(GRAPH_MAX_NODES, Math.max(10, nodeLimitInput || GRAPH_DEFAULT_NODES)));
+      setMinEdgeWeight(Math.max(1, minEdgeInput || 1));
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [nodeLimitInput, minEdgeInput]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setAppliedParams(params), 400);
+    return () => window.clearTimeout(timer);
+  }, [params]);
+
+  // Chargement du graphe à l'ouverture de l'onglet : seulement le type affiché et le nombre de nœuds demandé.
+  const filtersKey = JSON.stringify(filters);
+  useEffect(() => {
+    const key = `${activeGraph}|${filtersKey}|${nodeLimit}|${minEdgeWeight}`;
+    const hit = cacheRef.current.get(key);
+    if (hit) { setGraphData(hit); setLoadError(null); return undefined; }
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    api.getGraph(activeGraph, { ...(JSON.parse(filtersKey) as QueryParams), maxNodes: nodeLimit, minEdgeWeight })
+      .then((result) => {
+        if (cancelled) return;
+        cacheRef.current.set(key, result);
+        while (cacheRef.current.size > 8) cacheRef.current.delete(cacheRef.current.keys().next().value as string);
+        setGraphData(result);
+      })
+      .catch((error) => { if (!cancelled) setLoadError(error.message || String(error)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeGraph, filtersKey, nodeLimit, minEdgeWeight]);
+
+  // Nœuds affichés : ceux du graphe chargé (les plus fréquents) au-dessus de la valeur minimale.
+  const filteredGraph = useMemo(() => {
+    const nodes = (graphData?.nodes || [])
+      .filter((node) => node.value >= minNodeValue)
+      .map((node) => ({ ...node, color: colorForId(node.id) }));
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const links = (graphData?.links || []).filter((link) => nodeIds.has(link.source) && nodeIds.has(link.target));
+    return { nodes, links };
+  }, [graphData, minNodeValue]);
 
   // Changer de type de graphe repart d'une sélection vide (les identifiants ne sont pas comparables).
   useEffect(() => {
@@ -313,58 +193,34 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
   const visualRef = useRef({ focus: focusNode, selected, neighborhood: neighborhoodIds, showEdges, isolate, colorByCommunity });
   visualRef.current = { focus: focusNode, selected, neighborhood: neighborhoodIds, showEdges, isolate, colorByCommunity };
 
+  // Construction du graphe et du rendu Sigma ; la disposition est appliquée ensuite par l'effet suivant.
   useEffect(() => {
     if (!containerRef.current) return undefined;
     const container = containerRef.current;
 
-    // Build graphology graph
     const graph = new (Graph as any)({ type: 'undirected', allowSelfLoops: false });
-    filteredGraph.nodes.forEach(n => {
-      // Sigma expects a supported `type` for rendering (use 'circle');
-      // keep original semantic type in `role` for app logic.
+    filteredGraph.nodes.forEach((n) => {
+      // `type` est le type de rendu Sigma ; le rôle sémantique est gardé dans `role`.
       const baseSize = Math.max(3, Math.min(18, 2 + Math.sqrt(n.value) * 1.4));
-      graph.mergeNode(n.id, {
-        label: n.label,
-        value: n.value,
-        size: baseSize,
-        baseSize,
-        color: n.color,
-        baseColor: n.color,
-        type: 'circle',
-        role: n.type || 'hashtag',
-      });
+      graph.mergeNode(n.id, { label: n.label || n.id, value: n.value, size: baseSize, color: n.color, baseColor: n.color, type: 'circle', role: activeGraph === 'mentions' ? 'compte' : 'hashtag' });
     });
-    filteredGraph.links.forEach(l => {
+    filteredGraph.links.forEach((l) => {
       if (l.source === l.target || !graph.hasNode(l.source) || !graph.hasNode(l.target)) return;
       const existing = graph.edge(l.source, l.target);
       if (existing) graph.updateEdgeAttribute(existing, 'weight', (weight: number) => (weight || 0) + l.value);
       else graph.addEdge(l.source, l.target, { weight: l.value });
     });
     graph.forEachEdge((edge: string, attributes: any) => graph.setEdgeAttribute(edge, 'size', edgeSizeForWeight(attributes.weight)));
-
-    const communities = detectCommunities(graph);
-    graph.forEachNode((node: string) => graph.setNodeAttribute(node, 'community', communities[node] ?? 0));
-
-    const focus = focusRef.current && graph.hasNode(focusRef.current) ? focusRef.current : null;
-    let positions: Record<string, { x: number; y: number }> = {};
-    try {
-      positions = computeLayout(graph, layoutRef.current, { spacing: spacingRef.current, focus });
-    } catch (err) {
-      console.warn('Layout failed', err);
-    }
-    graph.forEachNode((node: string) => {
-      const position = positions[node];
-      graph.setNodeAttribute(node, 'x', Number.isFinite(position?.x) ? position.x : Math.random() * 100);
-      graph.setNodeAttribute(node, 'y', Number.isFinite(position?.y) ? position.y : Math.random() * 100);
-    });
-    appliedLayoutRef.current = layoutKey(layoutRef.current, spacingRef.current, focus);
+    const communities = detectCommunities(graph, appliedParams.resolution);
+    graph.forEachNode((node: string, attributes: any) => graph.mergeNodeAttributes(node, { community: communities[node] ?? 0, x: attributes.x ?? Math.random(), y: attributes.y ?? Math.random() }));
+    appliedLayoutRef.current = '';
     graphRef.current = graph;
 
     setSelected((previous) => {
       const kept = new Set(Array.from(previous).filter((id) => graph.hasNode(id)));
       return kept.size === previous.size ? previous : kept;
     });
-    if (focusRef.current && !graph.hasNode(focusRef.current)) setFocusNode(null);
+    setFocusNode((previous) => (previous && graph.hasNode(previous) ? previous : null));
     setGraphVersion((version) => version + 1);
 
     // Sigma requires browser WebGL globals and must not be loaded by jsdom tests.
@@ -372,7 +228,7 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
       return () => { graphRef.current = null; };
     }
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const SigmaLib: any = (require('sigma').default as any) || (window as any).sigma;
+    const SigmaLib: any = require('sigma').default;
     const labelColor = getComputedStyle(container).getPropertyValue('--text-primary').trim() || '#0f172a';
     const largeGraph = graph.size > 3000;
 
@@ -415,7 +271,6 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
       return data;
     };
 
-    // create sigma renderer
     let renderer: any = null;
     try {
       renderer = new SigmaLib(graph, container, {
@@ -454,34 +309,61 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
     }
 
     return () => {
-      cancelAnimationRef.current?.();
+      stopLayoutRef.current?.();
       try { if (renderer && typeof renderer.kill === 'function') renderer.kill(); } catch (e) {}
       try { if (graph && typeof graph.clear === 'function') graph.clear(); } catch (e) {}
       sigmaRef.current = null;
       graphRef.current = null;
     };
-  }, [filteredGraph]);
+    // La résolution Louvain est appliquée par un effet dédié, sans reconstruire le rendu.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredGraph, activeGraph]);
 
-  // Changement de spatialisation : nouvelles positions calculées sur le graphe existant puis animées.
+  // Résolution Louvain modifiée : nouvelles communautés (couleurs, dispositions par communauté).
   useEffect(() => {
     const graph = graphRef.current;
-    if (!graph) return undefined;
+    if (!graph) return;
+    const communities = detectCommunities(graph, appliedParams.resolution);
+    graph.forEachNode((node: string) => graph.setNodeAttribute(node, 'community', communities[node] ?? 0));
+    sigmaRef.current?.refresh();
+  }, [appliedParams.resolution, graphVersion]);
+
+  // Disposition : appliquée après chaque construction, et à chaque changement de disposition ou de paramètre.
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph || !graph.order) return undefined;
     const focus = layoutUsesFocus(layout) && focusNode && graph.hasNode(focusNode) ? focusNode : null;
-    const key = layoutKey(layout, spacing, focus);
+    const key = layoutKey(layout, appliedParams, focus);
     if (key === appliedLayoutRef.current) return undefined;
+    appliedLayoutRef.current = key;
+    stopLayoutRef.current?.();
     setLayoutBusy(true);
+    const renderer = sigmaRef.current;
+    const finish = () => {
+      setLayoutBusy(false);
+      sigmaRef.current?.getCamera().animatedReset({ duration: 300 });
+    };
+
+    // Calcul en continu, en tâche de fond, quand le navigateur le permet.
+    if (renderer && usesBackgroundLayout(layout) && typeof Worker !== 'undefined') {
+      try {
+        stopLayoutRef.current = runBackgroundLayout(graph, layout, appliedParams, finish);
+        return undefined;
+      } catch (err) {
+        // Worker indisponible (navigateur, politique de sécurité) : calcul classique ci-dessous.
+        console.warn('Background layout unavailable, falling back to synchronous layout', err);
+      }
+    }
     const timer = window.setTimeout(() => {
-      appliedLayoutRef.current = key;
       let positions: Record<string, { x: number; y: number }>;
       try {
-        positions = computeLayout(graph, layout, { spacing, focus });
+        positions = computeLayout(graph, layout, { params: appliedParams, focus });
       } catch (err) {
         console.warn('Layout failed', err);
         setLayoutBusy(false);
         return;
       }
       if (graphRef.current !== graph) return;
-      const renderer = sigmaRef.current;
       if (!renderer) {
         graph.forEachNode((node: string) => graph.mergeNodeAttributes(node, positions[node]));
         setLayoutBusy(false);
@@ -489,21 +371,16 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
       }
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { animateNodes } = require('sigma/utils');
-      cancelAnimationRef.current?.();
-      cancelAnimationRef.current = animateNodes(graph, positions, { duration: 500 }, () => {
-        setLayoutBusy(false);
-        renderer.getCamera().animatedReset({ duration: 300 });
-      });
-    }, 180);
-    return () => {
-      window.clearTimeout(timer);
-      setLayoutBusy(false);
-    };
-  }, [layout, spacing, focusNode, graphVersion]);
+      stopLayoutRef.current = animateNodes(graph, positions, { duration: 500 }, finish);
+    }, 30);
+    return () => window.clearTimeout(timer);
+  }, [layout, appliedParams, focusNode, graphVersion]);
 
   useEffect(() => {
     sigmaRef.current?.refresh();
   }, [focusNode, selected, neighborhoodIds, showEdges, isolate, colorByCommunity]);
+
+  useEffect(() => () => stopLayoutRef.current?.(), []);
 
   const centerOn = (node: string) => {
     const renderer = sigmaRef.current;
@@ -532,7 +409,6 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
   const query = neighborQuery.trim().toLowerCase();
   const visibleNeighbors = query ? neighborhood.filter((item) => item.label.toLowerCase().includes(query)) : neighborhood;
   const focusInfo = neighborhood.find((item) => item.id === focusNode) || null;
-  const focusRole = focusNode && graphRef.current?.hasNode(focusNode) ? graphRef.current.getNodeAttribute(focusNode, 'role') : null;
   const directCount = neighborhood.filter((item) => item.distance === 1).length;
 
   const toggleNode = (id: string) => setSelected((previous) => {
@@ -565,20 +441,30 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
   const selectedList = Array.from(selected);
   const labelOf = (id: string) => (graphRef.current?.hasNode(id) ? graphRef.current.getNodeAttribute(id, 'label') : id) || id;
 
+  const exportMeta = (nodeCount: number, edgeCount: number): SubgraphMeta => ({
+    generated_at: new Date().toISOString(),
+    graph_type: activeGraph,
+    layout,
+    filters: Object.fromEntries(Object.entries(filters).filter(([, value]) => typeof value === 'string' && value)) as Record<string, string>,
+    node_count: nodeCount,
+    edge_count: edgeCount,
+  });
+
+  // Graphe affiché en entier, au format GEXF (Gephi).
+  const exportDisplayedGraph = () => {
+    const graph = graphRef.current;
+    if (!graph?.order) return;
+    const { nodes, edges } = buildSubgraph(graph, graph.nodes());
+    const meta = exportMeta(nodes.length, edges.length);
+    downloadFile(subgraphToGexf(nodes, edges, meta), `graphe_${activeGraph}_${meta.generated_at.slice(0, 10)}.gexf`, 'application/xml;charset=utf-8');
+  };
+
   const exportSubgraph = async (format: 'json' | 'csv' | 'gexf') => {
     const graph = graphRef.current;
     if (!graph || !selected.size) return;
     const { nodes, edges } = buildSubgraph(graph, selected);
-    const generatedAt = new Date().toISOString();
-    const meta: SubgraphMeta = {
-      generated_at: generatedAt,
-      graph_type: activeGraph,
-      layout,
-      filters: Object.fromEntries(Object.entries(filters).filter(([, value]) => typeof value === 'string' && value)) as Record<string, string>,
-      node_count: nodes.length,
-      edge_count: edges.length,
-    };
-    const base = `sous-graphe_${activeGraph}_${fileSlug(labelOf(focusNode || nodes[0].id))}_${generatedAt.slice(0, 10)}`;
+    const meta = exportMeta(nodes.length, edges.length);
+    const base = `sous-graphe_${activeGraph}_${fileSlug(labelOf(focusNode || nodes[0].id))}_${meta.generated_at.slice(0, 10)}`;
     if (format === 'gexf') {
       downloadFile(subgraphToGexf(nodes, edges, meta), `${base}.gexf`, 'application/xml;charset=utf-8');
       setExportState({ busy: false, message: `GEXF exporté : ${nodes.length} nœuds, ${edges.length} arêtes.`, error: false });
@@ -608,6 +494,8 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
 
   const layoutInfo = LAYOUTS.find((item) => item.id === layout);
   const isLarge = filteredGraph.nodes.length > LARGE_GRAPH_NODES;
+  const paramKeys = LAYOUT_PARAM_KEYS[layout];
+  const setParam = <K extends keyof LayoutParams>(key: K, value: LayoutParams[K]) => setParams((current) => ({ ...current, [key]: value }));
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
@@ -619,10 +507,12 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
         </button>
         <button type="button" onClick={resetView} style={pillButton(false)}>Reset view</button>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 6, flexWrap: 'wrap' }}>
-          <label htmlFor="graph-node-limit" style={{ fontSize: 12, color: 'var(--text-muted)' }}>Nodes:</label>
-          <input id="graph-node-limit" type="number" min={50} max={2000} value={nodeLimit} onChange={e => setNodeLimit(Math.min(2000, Number(e.target.value) || 50))} style={{ ...inputStyle, width: 90 }} />
-          <label htmlFor="graph-min-value" style={{ fontSize: 12, color: 'var(--text-muted)' }}>Min value:</label>
-          <input id="graph-min-value" type="number" min={1} max={100} value={minNodeValue} onChange={e => setMinNodeValue(Number(e.target.value) || 1)} style={{ ...inputStyle, width: 70 }} />
+          <label htmlFor="graph-node-limit" style={{ fontSize: 12, color: 'var(--text-muted)' }} title="Les nœuds les plus fréquents sont gardés">Nœuds :</label>
+          <input id="graph-node-limit" type="number" min={10} max={GRAPH_MAX_NODES} step={50} value={nodeLimitInput} onChange={(e) => setNodeLimitInput(Number(e.target.value))} style={{ ...inputStyle, width: 90 }} />
+          <label htmlFor="graph-min-value" style={{ fontSize: 12, color: 'var(--text-muted)' }} title="Fréquence minimale d’un nœud">Fréq. min. :</label>
+          <input id="graph-min-value" type="number" min={1} value={minNodeValue} onChange={(e) => setMinNodeValue(Math.max(1, Number(e.target.value) || 1))} style={{ ...inputStyle, width: 70 }} />
+          <label htmlFor="graph-min-edge" style={{ fontSize: 12, color: 'var(--text-muted)' }} title="Nombre minimal de posts pour garder une arête">Poids min. des arêtes :</label>
+          <input id="graph-min-edge" type="number" min={1} value={minEdgeInput} onChange={(e) => setMinEdgeInput(Number(e.target.value))} style={{ ...inputStyle, width: 70 }} />
         </div>
       </div>
 
@@ -631,23 +521,59 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
         <select id="graph-layout" value={layout} onChange={(event) => setLayout(event.target.value as LayoutId)} style={{ ...inputStyle, minWidth: 260 }}>
           {LAYOUTS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
         </select>
-        <label htmlFor="graph-spacing" style={{ fontSize: 12, color: layoutInfo?.usesSpacing ? 'var(--text-muted)' : 'var(--text-disabled, #9aa3ad)' }}>Espacement :</label>
-        <input id="graph-spacing" type="range" min={0.5} max={3} step={0.1} value={spacing} disabled={!layoutInfo?.usesSpacing} onChange={e => setSpacing(Number(e.target.value))} style={{ width: 120 }} />
+        <button type="button" style={smallButton} aria-expanded={paramsOpen} onClick={() => setParamsOpen((open) => !open)}>{paramsOpen ? '▾' : '▸'} Paramètres avancés</button>
         <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--text-secondary)' }}>
           <input type="checkbox" checked={colorByCommunity} onChange={(event) => setColorByCommunity(event.target.checked)} /> Couleurs par communauté (Louvain)
         </label>
         {layoutBusy && <span style={{ fontSize: 12, color: '#2a78d6', fontWeight: 600 }}>Calcul de la disposition…</span>}
+        {loading && <span style={{ fontSize: 12, color: '#2a78d6', fontWeight: 600 }}>Chargement du graphe…</span>}
         <div style={{ flexBasis: '100%', fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
           {layoutInfo?.description}
           {isLarge && ['forceatlas2', 'force', 'circular'].includes(layout) && (
             <span style={{ color: '#b57800' }}> · Graphe dense ({fmtNum(filteredGraph.nodes.length)} nœuds) : essayez « Communautés (Louvain) » ou « ForceAtlas2 + anti-chevauchement ».</span>
           )}
         </div>
+        {paramsOpen && (
+          <div style={{ flexBasis: '100%', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+            {paramKeys.map((key) => {
+              const control = PARAM_CONTROLS[key];
+              const value = params[key];
+              return (
+                <label key={key} style={paramLabelStyle} title={control.help}>
+                  <span style={{ fontWeight: 700 }}>
+                    {control.label}{control.kind === 'range' ? ` : ${value}` : ''}
+                  </span>
+                  {control.kind === 'range' && (
+                    <input type="range" min={control.min} max={control.max} step={control.step} value={Number(value)} onChange={(event) => setParam(key, Number(event.target.value) as never)} />
+                  )}
+                  {control.kind === 'checkbox' && (
+                    <input type="checkbox" checked={Boolean(value)} onChange={(event) => setParam(key, event.target.checked as never)} style={{ justifySelf: 'start' }} />
+                  )}
+                  {control.kind === 'select' && (
+                    <select value={String(value)} onChange={(event) => setParam(key, event.target.value as never)} style={{ ...inputStyle, fontSize: 12 }}>
+                      {control.options?.map(([optionValue, optionLabel]) => <option key={optionValue} value={optionValue}>{optionLabel}</option>)}
+                    </select>
+                  )}
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{control.help}</span>
+                </label>
+              );
+            })}
+            {paramKeys.length === 0 && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Cette disposition n’a pas de paramètre.</span>}
+            <div style={{ display: 'flex', alignItems: 'end' }}>
+              <button type="button" style={smallButton} onClick={() => setParams(DEFAULT_LAYOUT_PARAMS)}>Valeurs par défaut</button>
+            </div>
+          </div>
+        )}
       </div>
+
+      {loadError && <div style={{ ...cardStyle, color: '#e34948', fontSize: 13 }}>Graphe indisponible : {loadError}</div>}
 
       <div className="graphs-layout">
         <div style={{ minHeight: 720, border: '1px solid var(--border)', borderRadius: 16, overflow: 'hidden', background: 'var(--card-bg)', position: 'relative' }}>
           <div ref={containerRef} style={{ width: '100%', height: '100%', minHeight: 720 }} />
+          {!loading && graphData && filteredGraph.nodes.length === 0 && (
+            <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Aucun nœud pour ces filtres.</div>
+          )}
           {selected.size > 0 && (
             <div style={{ position: 'absolute', left: 12, bottom: 12, fontSize: 12, padding: '6px 10px', borderRadius: 999, background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow)', color: 'var(--text-secondary)' }}>
               <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 999, background: SELECTED_COLOR, marginRight: 6 }} />
@@ -662,7 +588,8 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
             {focusNode && focusInfo ? (
               <div style={{ fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.7 }}>
                 <div><strong>{focusInfo.label}</strong></div>
-                <div style={{ color: 'var(--text-muted)' }}>Type : {focusRole || 'hashtag'}</div>
+                {focusInfo.label !== focusNode && <div style={{ color: 'var(--text-muted)', fontSize: 11, overflowWrap: 'anywhere' }}>{focusNode}</div>}
+                <div style={{ color: 'var(--text-muted)' }}>Type : {activeGraph === 'mentions' ? 'compte' : 'hashtag'}</div>
                 <div>Fréquence : {fmtNum(focusInfo.value)}</div>
                 <div>Degré : {focusInfo.degree}</div>
                 <div>Voisins directs : {directCount}</div>
@@ -761,44 +688,29 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ posts, graphData, filters = {}, o
         </div>
       </div>
 
-      {/* Instructions and Résumé moved to bottom */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, marginTop: 12 }}>
         <div style={cardStyle}>
-          <div style={cardTitleStyle}>Instructions</div>
+          <div style={cardTitleStyle}>Lire le graphe</div>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-            - Zoom avec la molette, déplacement par clic-glisser
-            <br />- Choisissez une spatialisation adaptée : « Communautés » ou « anti-chevauchement » pour les graphes denses
-            <br />- Cliquez sur un nœud pour afficher son voisinage (niveaux 1 à 3) dans le panneau de droite
-            <br />- Cochez les voisins à conserver ; ↗ explore depuis un voisin sans perdre la sélection
-            <br />- Maj + clic sur un nœud l’ajoute ou le retire de la sélection
-            <br />- Exportez le sous-graphe (nœuds sélectionnés + arêtes entre eux + posts liés)
-            <br />- Reset view pour revenir à l’ensemble
+            {activeGraph === 'hashtags'
+              ? <>Un nœud est un hashtag ; sa taille dépend du nombre de posts qui le contiennent. Une arête relie deux hashtags présents dans un même post ; son épaisseur dépend du nombre de ces posts.</>
+              : <>Un nœud est un compte, auteur ou mentionné. Une arête relie un auteur à un compte qu’il a mentionné ; son épaisseur dépend du nombre de ces posts (le sens de la mention n’est pas conservé). Les comptes Bluesky sont identifiés par leur DID et affichés avec leur pseudo.</>}
+            <br />Seuls les <strong>nœuds les plus fréquents</strong> sont chargés (champ « Nœuds »), puis filtrés par fréquence minimale ; les arêtes de poids inférieur au minimum sont écartées.
+            <br />Molette : zoom · clic-glisser : déplacement · clic sur un nœud : voisinage · Maj + clic : sélection.
           </div>
         </div>
 
         <div style={cardStyle}>
           <div style={cardTitleStyle}>Résumé</div>
           <div style={{ display: 'grid', gap: 10, fontSize: 13, color: 'var(--text-secondary)' }}>
-            <div>{fmtNum(filteredGraph.nodes.length)} nœuds affichés sur {fmtNum(currentGraph.nodes.length)} chargés</div>
-            <div>{fmtNum(filteredGraph.links.length)} relations affichées sur {fmtNum(currentGraph.links.length)}</div>
-            <div>Épaisseur des arêtes : occurrences, échelle logarithmique</div>
-            <div>{activeGraph === 'mentions' ? 'Vue mentions / auteurs' : 'Vue hashtags'} · {layoutInfo?.label}</div>
+            <div>{fmtNum(filteredGraph.nodes.length)} nœuds affichés sur {fmtNum(graphData?.total_nodes ?? filteredGraph.nodes.length)} au total pour ces filtres</div>
+            <div>{fmtNum(filteredGraph.links.length)} relations affichées sur {fmtNum(graphData?.total_links ?? filteredGraph.links.length)} au total</div>
+            <div>{activeGraph === 'mentions' ? 'Vue mentions / comptes' : 'Vue hashtags'} · {layoutInfo?.label}</div>
             {focusNode && <div style={{ color: '#2a78d6' }}>Exploration de voisinage active</div>}
+            <div>
+              <button type="button" style={smallButton} disabled={!filteredGraph.nodes.length} onClick={exportDisplayedGraph}>Exporter le graphe affiché (GEXF)</button>
+            </div>
           </div>
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Statistiques
-        </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-          <span style={{ background: 'rgba(42,120,214,0.12)', color: '#2a78d6', padding: '0.35rem 0.65rem', borderRadius: 999, fontSize: 12 }}>
-            {fmtNum(graphData?.mentions.links.length ?? mentionStats.relations.length)} relations de mentions
-          </span>
-          <span style={{ background: 'rgba(29,158,117,0.12)', color: '#1d9e75', padding: '0.35rem 0.65rem', borderRadius: 999, fontSize: 12 }}>
-            {fmtNum(graphData?.hashtags.links.length ?? hashtagStats.relations.length)} relations de hashtags
-          </span>
         </div>
       </div>
     </div>

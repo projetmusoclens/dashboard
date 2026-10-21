@@ -1,5 +1,4 @@
 const { collectionKey, normalizeCollectionName } = require('./collections');
-const { missingRoot } = require('./conversations');
 
 // Hashtags Unicode (#España, #كأس_العالم) : le motif Mongo des statistiques suit la même règle.
 const HASHTAG_PATTERN = /#[\p{L}\p{N}_]+/gu;
@@ -18,10 +17,22 @@ function edgeKey(source, target) {
   return [source, target].sort().join('::');
 }
 
+// Comptes mentionnés dans un post Bluesky : leurs DID, présents dans les facets du post.
+function blueskyMentionDids(post) {
+  const raw = post.raw_json && typeof post.raw_json === 'object' ? post.raw_json : {};
+  const facets = raw.facets || raw.record?.facets || [];
+  const dids = [];
+  facets.forEach((facet) => (facet?.features || []).forEach((feature) => {
+    if (String(feature?.$type || '').endsWith('#mention') && feature.did) dids.push(`@${String(feature.did).toLowerCase()}`);
+  }));
+  return [...new Set(dids)];
+}
+
 // Nœuds et arêtes qu'un post apporte au graphe ; partagé par la construction et l'export de sous-graphe.
+// Mentions : sur X, les @pseudo du texte ; sur Bluesky, les DID des facets, comme pour les auteurs.
 function graphEntities(post, type) {
   if (type === 'mentions') {
-    const mentions = extractMentions(post.text);
+    const mentions = post.platform === 'bluesky' ? blueskyMentionDids(post) : extractMentions(post.text);
     if (!mentions.length) return { nodes: [], edges: [] };
     const author = post.author_handle ? `@${String(post.author_handle).toLowerCase()}` : '@Auteur inconnu';
     return { nodes: [author, ...mentions], edges: mentions.map((mention) => [author, mention]) };
@@ -32,25 +43,6 @@ function graphEntities(post, type) {
     for (let next = index + 1; next < hashtags.length; next += 1) edges.push([hashtags[index], hashtags[next]]);
   }
   return { nodes: hashtags, edges };
-}
-
-function buildThreads(posts) {
-  const byId = new Map(posts.map((post) => [String(post.post_id), post]));
-  const grouped = new Map();
-  posts.filter((post) => post.reply_to_id).forEach((reply) => {
-    let root = reply;
-    const visited = new Set();
-    while (root.reply_to_id && byId.has(String(root.reply_to_id)) && !visited.has(String(root.post_id))) {
-      visited.add(String(root.post_id));
-      root = byId.get(String(root.reply_to_id));
-    }
-    // Parent absent de la base : la réponse est rattachée à ce parent manquant, pas à elle-même.
-    const rootId = root.reply_to_id ? String(root.reply_to_id) : String(root.post_id);
-    const parent = root.reply_to_id ? { ...missingRoot(rootId, root), text: '', engagement: {}, matched_keywords: [] } : root;
-    if (!grouped.has(rootId)) grouped.set(rootId, { parent, replies: [] });
-    grouped.get(rootId).replies.push(reply);
-  });
-  return Array.from(grouped.values()).sort((left, right) => right.replies.length - left.replies.length);
 }
 
 function buildStatsFromPosts(posts) {
@@ -118,25 +110,26 @@ function createGraphBuilder(type) {
     });
   };
 
-  // maxNodes garde les nœuds les plus fréquents et les liens entre eux.
-  const result = (maxNodes = Infinity) => {
+  // Garde les maxNodes nœuds les plus fréquents et les liens entre eux d'un poids au moins minEdgeWeight.
+  // total_nodes / total_links donnent le volume complet avant ces limites.
+  const result = (maxNodes = Infinity, { minEdgeWeight = 1 } = {}) => {
     const kept = Array.from(nodeCounts).sort((a, b) => b[1] - a[1]).slice(0, maxNodes);
     const keptIds = new Set(kept.map(([id]) => id));
     const links = [];
     edgeCounts.forEach((value, key) => {
       const [source, target] = key.split('::');
-      if (keptIds.has(source) && keptIds.has(target)) links.push({ source, target, value });
+      if (value >= minEdgeWeight && keptIds.has(source) && keptIds.has(target)) links.push({ source, target, value });
     });
-    return { nodes: kept.map(([id, value]) => ({ id, label: id, value })), links };
+    return { nodes: kept.map(([id, value]) => ({ id, label: id, value })), links, total_nodes: nodeCounts.size, total_links: edgeCounts.size };
   };
 
   return { add, result };
 }
 
-function buildGraphFromPosts(posts, type, maxNodes) {
+function buildGraphFromPosts(posts, type, maxNodes, options) {
   const builder = createGraphBuilder(type);
   posts.forEach(builder.add);
-  return builder.result(maxNodes);
+  return builder.result(maxNodes, options);
 }
 
 // Indique quels nœuds et arêtes de la sélection un post contient ; null s'il n'en contient aucun.
@@ -214,12 +207,12 @@ module.exports = {
   MONGO_HASHTAG_PATTERN,
   buildGraphFromPosts,
   buildStatsFromPosts,
-  buildThreads,
   buildTimeline,
   createGraphBuilder,
   edgeKey,
   extractHashtags,
   extractMentions,
+  blueskyMentionDids,
   graphEntities,
   matchSubgraphPost,
   timelineRowsFromPosts,

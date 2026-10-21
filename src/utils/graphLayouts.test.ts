@@ -1,6 +1,6 @@
 // @ts-ignore
 import Graph from 'graphology';
-import { bfsDistances, computeLayout, detectCommunities, LAYOUTS } from './graphLayouts';
+import { bfsDistances, computeLayout, DEFAULT_LAYOUT_PARAMS, detectCommunities, LAYOUT_PARAM_KEYS, LAYOUTS } from './graphLayouts';
 import { buildSubgraph, edgesToCsv, subgraphToGexf } from './subgraphExport';
 
 function sampleGraph() {
@@ -15,7 +15,7 @@ function sampleGraph() {
 test('every layout returns a finite position for every node', () => {
   const graph = sampleGraph();
   LAYOUTS.forEach(({ id }) => {
-    const positions = computeLayout(graph, id, { spacing: 1, focus: '#c' });
+    const positions = computeLayout(graph, id, { focus: '#c' });
     graph.forEachNode((node: string) => {
       expect(Number.isFinite(positions[node]?.x)).toBe(true);
       expect(Number.isFinite(positions[node]?.y)).toBe(true);
@@ -49,4 +49,16 @@ test('exports the induced subgraph only', () => {
   expect(doc.getElementsByTagName('parsererror')).toHaveLength(0);
   expect(doc.getElementsByTagName('node')).toHaveLength(3);
   expect(doc.getElementsByTagName('edge')[0].getAttribute('weight')).toBe('2');
+});
+
+test('layout parameters change the result', () => {
+  const graph = sampleGraph();
+  const base = computeLayout(graph, 'forceatlas2');
+  const spread = computeLayout(graph, 'forceatlas2', { params: { ...DEFAULT_LAYOUT_PARAMS, spacing: 3, linLog: true } });
+  expect(spread).not.toEqual(base);
+  expect(Object.keys(detectCommunities(graph, 0.2)).length).toBe(graph.order);
+  Object.entries(LAYOUT_PARAM_KEYS).forEach(([id, keys]) => {
+    expect(LAYOUTS.some((layout) => layout.id === id)).toBe(true);
+    keys.forEach((key) => expect(key in DEFAULT_LAYOUT_PARAMS).toBe(true));
+  });
 });

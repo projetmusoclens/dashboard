@@ -1,9 +1,10 @@
 const crypto = require('crypto');
 const express = require('express');
+const compression = require('compression');
 const cors = require('cors');
 const { MONGO_DB_NAME, connectMongo, getDataSource, getDb } = require('./db/data-source');
 const { normalizePost } = require('./services/normalization');
-const { buildGraphFromPosts, buildStatsFromPosts, buildThreads } = require('./services/analytics');
+const { buildGraphFromPosts, buildStatsFromPosts } = require('./services/analytics');
 const { buildMatchFromQuery } = require('./services/query');
 const { bootstrapAdmin, createMemoryStore, createMongoStore } = require('./services/accounts');
 const { registerAnalyticsRoutes } = require('./routes/analytics');
@@ -12,6 +13,7 @@ const { registerPostRoutes } = require('./routes/posts');
 const { registerConversationRoutes } = require('./routes/conversations');
 const { registerAccountRoutes, registerPublicAuthRoutes } = require('./routes/accounts');
 const { createFailureLimiter, createUserAuth } = require('./middleware/auth');
+const { createProfileResolver } = require('./services/blueskyProfiles');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -40,6 +42,8 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map((orig
 // Render place un proxy devant l'application : req.ip doit venir de son en-tête.
 app.set('trust proxy', 1);
 app.use(cors(ALLOWED_ORIGINS.length ? { origin: ALLOWED_ORIGINS } : undefined));
+// Réponses JSON compressées (gzip) : les graphes et listes pèsent environ dix fois moins à transférer.
+app.use(compression());
 app.use(express.json({ limit: '2mb' }));
 
 app.get('/api/health', (req, res) => {
@@ -72,7 +76,6 @@ const routeDependencies = {
   getDb,
   normalizePost,
   buildStatsFromPosts,
-  buildThreads,
   buildGraphFromPosts,
   buildMatchFromQuery,
   safeHandler,
@@ -80,6 +83,7 @@ const routeDependencies = {
   getStore,
   userAuth,
   findPostsByIds,
+  profiles: createProfileResolver({ getDb }),
 };
 
 registerAccountRoutes(app, routeDependencies);

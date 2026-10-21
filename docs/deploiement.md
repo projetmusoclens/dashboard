@@ -129,8 +129,10 @@ Contrôles rapides après un déploiement :
 ## Limites connues
 
 - **Mise en veille** : en offre gratuite, Render arrête l’API après environ 15 minutes sans trafic. Le premier appel suivant prend 30 à 60 secondes ; l’écran de connexion l’indique.
-- **Mémoire** : l’instance gratuite dispose de 512 Mo. Une route qui charge toute la collection en mémoire fait tomber le service (`502`). Les graphes sont donc calculés en flux et limités aux 300 nœuds les plus fréquents (`?maxNodes=`, 2 000 au plus). L’onglet Threads utilise `/api/conversations`, paginé (quelques dizaines de Ko) ; l’ancienne route `/api/threads` (environ 33 Mo) n’est plus appelée par le frontend.
+- **Mémoire** : l’instance gratuite dispose de 512 Mo. Une route qui charge toute la collection en mémoire fait tomber le service (`502`). Les graphes sont donc calculés en flux : l’onglet Graphes ne charge que le nombre de nœuds demandé (300 par défaut, 5 000 au plus), à son ouverture, et les réponses sont compressées. L’onglet Threads utilise `/api/conversations`, paginé (quelques dizaines de Ko) ; l’ancienne route `/api/threads` (environ 33 Mo) n’est plus appelée par le frontend.
 - **URL de déploiement Vercel** : chaque déploiement reçoit aussi une adresse unique (`dashboard-<identifiant>-musoc-lens.vercel.app`). Elle n’est pas dans `ALLOWED_ORIGINS` et l’API y paraît injoignable : utilisez l’adresse de branche ou le domaine de production.
+
+- **Noms des comptes Bluesky** : l’API Render interroge `public.api.bsky.app` (sans compte) pour les noms et avatars, mis en cache 7 jours dans la collection `bluesky_profiles`. Si Bluesky ne répond pas, les comptes restent affichés avec leur identifiant (`did:plc:…`) ; rien ne bloque.
 
 ## Dépannage
 

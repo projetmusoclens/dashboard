@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FileUp, GitBranch, Info, PencilLine, Search, X, ZoomIn } from 'lucide-react';
-import api, { deleteAnnotation, exportAnnotations, getAnnotations, importAnnotations, QueryParams, saveAnnotation, StoredAnnotation } from '../services/api';
-import { Post, PostKind, PostSort } from '../types';
+import api from '../services/api';
+import { Post, PostKind, PostSort, QueryParams, StoredAnnotation } from '../types';
 import { fmtNum } from '../utils/format';
 import { langLabel } from '../utils/languages';
 import { downloadFile, toCsv } from '../utils/download';
@@ -156,7 +156,7 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
     toastRef.current = window.setTimeout(() => setToast(''), 1800);
   }, []);
 
-  const reloadAnnotations = useCallback(() => getAnnotations('mine')
+  const reloadAnnotations = useCallback(() => api.getAnnotations('mine')
     .then(({ annotations: items }) => {
       setAnnotations(Object.fromEntries(items.map((item) => [annotationKey(item.platform, item.post_id), fromServer(item)])));
       setAnnotationsReady(true);
@@ -179,7 +179,7 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
       return { ...annotation, platform, post_id: rest.join(':') };
     });
     try {
-      const result = await importAnnotations(items);
+      const result = await api.importAnnotations(items);
       try { localStorage.setItem(legacyFlag, new Date().toISOString()); } catch { /* sans stockage, la proposition reviendra */ }
       setLegacyCount(0);
       await reloadAnnotations();
@@ -281,7 +281,7 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
     const postId = rest.join(':');
     setAnnotations((all) => ({ ...all, [key]: { ...draft, updatedAt: new Date().toISOString() } }));
     setSaveState('Enregistrement…');
-    saveAnnotation({ ...draft, platform, post_id: postId })
+    api.saveAnnotation({ ...draft, platform, post_id: postId })
       .then(({ annotation }) => {
         setAnnotations((all) => ({ ...all, [key]: fromServer(annotation) }));
         if (draftKeyRef.current === key && !dirtyRef.current) setSaveState('Enregistré');
@@ -324,7 +324,7 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
     const key = annotationKey(current.platform, current.id);
     dirtyRef.current = false;
     window.clearTimeout(autosaveRef.current);
-    deleteAnnotation(current.platform, current.id)
+    api.deleteAnnotation(current.platform, current.id)
       .then(() => {
         setAnnotations((all) => {
           const { [key]: _removed, ...rest } = all;
@@ -404,7 +404,7 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
     commitDraft();
     setExportOpen(false);
     try {
-      const { annotations: items } = await exportAnnotations(scope);
+      const { annotations: items } = await api.exportAnnotations(scope);
       if (!items.length) { showToast('Aucune annotation enregistrée'); return; }
       const headers = ['annotateur', 'plateforme', 'publication_id', 'auteur', 'collecte', 'date_publication', 'langue', 'texte', ...ANNOTATION_HEADERS];
       const rows = items.map((item) => [item.username, item.platform, item.post_id, item.post?.author_handle, item.post?.collection_name, item.post?.timestamp, item.post?.lang, item.post?.text, ...annotationCells(fromServer(item))]);

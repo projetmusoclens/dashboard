@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { changePassword } from '../services/api';
+import api from '../services/api';
 import { useAuth } from './AuthGate';
 
 const inputStyle: React.CSSProperties = { padding: '9px 11px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--input-bg)', color: 'var(--text-primary)', fontSize: 14 };
@@ -19,7 +19,7 @@ const ChangePasswordDialog: React.FC<{ onClose: () => void }> = ({ onClose }) =>
     setBusy(true);
     setError(null);
     try {
-      const result = await changePassword(current, next);
+      const result = await api.changePassword(current, next);
       setSession(result.token, result.user);
       setDone(true);
     } catch (err: any) {

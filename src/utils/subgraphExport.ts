@@ -1,4 +1,4 @@
-import { SubgraphPost } from '../services/api';
+import { SubgraphPost } from '../types';
 import { toCsv } from './download';
 
 export interface SubgraphNode {

@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { BarChart2, MessageSquare, GitBranch, Moon, Sun, CircleHelp, Users, KeyRound, LogOut } from 'lucide-react';
-import { TabId, Post, DashboardData } from './types';
-import { dashboardData as initialDashboardData } from './data/dashboardData';
+import { Moon, Sun, CircleHelp, KeyRound, LogOut } from 'lucide-react';
+import { Collection, DashboardData, Post, QueryParams, TabId, TimelineResponse } from './types';
+import { buildDashboardData, emptyDashboardData } from './data/dashboardData';
+import { APP_SUBTITLE, APP_TITLE, TABS } from './config';
 import api from './services/api';
 import OverviewTab from './components/OverviewTab';
 import ExplorerTab from './components/ExplorerTab';
@@ -12,103 +13,43 @@ import UsersTab from './components/UsersTab';
 import ChangePasswordDialog from './components/ChangePasswordDialog';
 import { useAuth } from './components/AuthGate';
 import DashboardFilters from './components/DashboardFilters';
+import ErrorBoundary from './components/ErrorBoundary';
 import { fmtNum } from './utils/format';
-import { GraphResponse, QueryParams, TimelineResponse } from './services/api';
 import './App.css';
 
-const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
-  { id: 'overview', label: 'Vue globale', icon: <BarChart2 size={15} /> },
-  { id: 'posts', label: 'Explorer', icon: <MessageSquare size={15} /> },
-  { id: 'threads', label: 'Threads', icon: <GitBranch size={15} /> },
-  { id: 'graphs', label: 'Graphes', icon: <GitBranch size={15} /> },
-  { id: 'users', label: 'Utilisateurs', icon: <Users size={15} /> },
-];
-
-// Les graphes chargent jusqu'à 2000 nœuds ; l'onglet Graphes en affiche une partie réglable.
-const GRAPH_MAX_NODES = 2000;
-
-function normalizeTopAuthors(value: { author: string; count: number }[] | Record<string, number> | undefined): Record<string, number> {
-  if (Array.isArray(value)) {
-    return value.reduce((authors, item) => {
-      if (item?.author) authors[item.author] = Number(item.count) || 0;
-      return authors;
-    }, {} as Record<string, number>);
-  }
-  return value || {};
-}
+const PAGE_SUBTITLES: Record<TabId, string> = {
+  overview: 'Vue d’ensemble de la sélection : volume, langues, types de publications et mots-clés',
+  posts: 'Lire, qualifier et annoter les publications X et Bluesky de la sélection',
+  threads: 'Conversations reconstruites à partir des réponses collectées',
+  graphs: 'Réseaux de hashtags et de mentions',
+  users: 'Créer les comptes, attribuer les rôles et désactiver un accès',
+};
 
 function App() {
   const { user, logout } = useAuth();
   const isAdmin = user.role === 'admin';
-  const visibleTabs = TABS.filter((tab) => tab.id !== 'users' || isAdmin);
+  const visibleTabs = TABS.filter((tab) => !tab.adminOnly || isAdmin);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
-  const [dashboardData, setDashboardData] = useState<DashboardData>(initialDashboardData);
+  const [dashboardData, setDashboardData] = useState<DashboardData>(emptyDashboardData);
   const [darkMode, setDarkMode] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
   const [loadingData, setLoadingData] = useState(true);
   const [loadingError, setLoadingError] = useState<string | null>(null);
-  const [graphSubtitle, setGraphSubtitle] = useState('Relations de mentions');
   const [selectedCollection, setSelectedCollection] = useState<string>('');
-  const [collections, setCollections] = useState<{ id: string; name: string; count: number }[]>([]);
+  const [collections, setCollections] = useState<Collection[]>([]);
   const [platform, setPlatform] = useState<string>('');
   const [lang, setLang] = useState<string>('');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
   const [timeline, setTimeline] = useState<TimelineResponse | null>(null);
   const [loadingWidgets, setLoadingWidgets] = useState(false);
-  const [graphs, setGraphs] = useState<{ hashtags: GraphResponse; mentions: GraphResponse } | null>(null);
 
-  // Load collections and initial stats/posts/timeline
   useEffect(() => {
-    let mounted = true;
-    const load = async () => {
-      setLoadingData(true);
-      try {
-        const colsResp = await api.getCollections();
-        const cols = colsResp.collections || [];
-        if (!mounted) return;
-        setCollections(cols);
-        // default to all collections
-        setSelectedCollection('');
-
-        // fetch stats and posts for initial selection (or global)
-        const params: any = {};
-        const stats = await api.getStats(params);
-        const posts = await api.getPosts({ limit: 200 });
-
-        const computed: DashboardData = {
-          title: initialDashboardData.title,
-          subtitle: initialDashboardData.subtitle,
-          total_posts: stats.total_posts,
-          by_lang: stats.by_lang || {},
-          by_platform: stats.by_platform || {},
-          by_keyword: stats.by_keyword || {},
-          hashtags: stats.hashtags || {},
-          posts_vs_replies: stats.posts_vs_replies,
-          by_type: stats.by_type,
-          top_liked: (posts || []).slice().sort((a: Post, b: Post) => (b.engagement.likes || 0) - (a.engagement.likes || 0)).slice(0, 50),
-          top_viewed: (posts || []).slice().sort((a: Post, b: Post) => (b.engagement.views || 0) - (a.engagement.views || 0)).slice(0, 50),
-          posts: posts || [],
-          top_authors: normalizeTopAuthors(stats.top_authors),
-          threads: [],
-          collections: cols,
-          collection_stats: stats.collection_stats,
-          engagement_avg: stats.engagement_avg,
-          engagement_sum: stats.engagement_sum,
-        };
-
-        setDashboardData(computed);
-        setLoadingData(false);
-      } catch (err: any) {
-        console.error('Impossible de récupérer les données depuis l’API backend :', err);
-        setLoadingError(err.message || String(err));
-        setLoadingData(false);
-      }
-    };
-    load();
-    return () => { mounted = false; };
+    api.getCollections()
+      .then((result) => setCollections(result.collections || []))
+      .catch((error) => console.error('Collections indisponibles', error));
   }, []);
 
   const filters = useMemo<QueryParams>(() => ({
@@ -119,65 +60,44 @@ function App() {
     ...(endDate ? { endDate } : {}),
   }), [selectedCollection, platform, lang, startDate, endDate]);
 
-  // refetch when filters change (collection, platform, lang, date range)
+  // Statistiques et courbe de la sélection, rechargées à chaque changement de filtre.
+  // Les autres onglets chargent leurs propres données quand ils sont ouverts.
   useEffect(() => {
-    let mounted = true;
-    const loadFilters = async () => {
-      setLoadingWidgets(true);
-      try {
-        const params = filters;
-
-        const [stats, posts, tl, hashtagGraph, mentionGraph] = await Promise.all([
-          api.getStats(params),
-          api.getPosts({ ...params, limit: 200 }),
-          api.getTimeline(params),
-          api.getGraph('hashtags', { ...params, maxNodes: GRAPH_MAX_NODES }),
-          api.getGraph('mentions', { ...params, maxNodes: GRAPH_MAX_NODES }),
-        ]);
-
-        if (!mounted) return;
-        const computed: DashboardData = {
-          title: initialDashboardData.title,
-          subtitle: initialDashboardData.subtitle,
-          total_posts: stats.total_posts,
-          by_lang: stats.by_lang || {},
-          by_platform: stats.by_platform || {},
-          by_keyword: stats.by_keyword || {},
-          hashtags: stats.hashtags || {},
-          posts_vs_replies: stats.posts_vs_replies,
-          by_type: stats.by_type,
-          top_liked: (posts || []).slice().sort((a: Post, b: Post) => (b.engagement.likes || 0) - (a.engagement.likes || 0)).slice(0, 50),
-          top_viewed: (posts || []).slice().sort((a: Post, b: Post) => (b.engagement.views || 0) - (a.engagement.views || 0)).slice(0, 50),
-          posts: posts || [],
-          top_authors: normalizeTopAuthors(stats.top_authors),
-          threads: [],
-          collections,
-          collection_stats: stats.collection_stats,
-          engagement_avg: stats.engagement_avg,
-          engagement_sum: stats.engagement_sum,
-        };
-        setDashboardData(computed);
+    // Ignore la réponse si les filtres ont changé entre-temps (requête devenue obsolète).
+    let cancelled = false;
+    setLoadingWidgets(true);
+    Promise.all([api.getStats(filters), api.getTimeline(filters)])
+      .then(([stats, tl]) => {
+        if (cancelled) return;
+        setDashboardData(buildDashboardData(stats));
         setTimeline(tl || null);
-        setGraphs({ hashtags: hashtagGraph, mentions: mentionGraph });
-      } catch (err: any) {
-        console.error('Filter load error', err);
-      } finally {
-        if (mounted) setLoadingWidgets(false);
-      }
-    };
-    loadFilters();
-    return () => { mounted = false; };
-  }, [filters, collections]);
+        setLoadingError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('Impossible de récupérer les statistiques :', error);
+        setLoadingError(error.message || String(error));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLoadingWidgets(false);
+        setLoadingData(false);
+      });
+    return () => { cancelled = true; };
+  }, [filters]);
 
   const handleSelectPost = (post: Post) => {
     setSelectedPost(post);
     setActiveTab('threads');
   };
 
+  const activeLabel = TABS.find((tab) => tab.id === activeTab)?.label;
   useEffect(() => {
-    const activeTabLabel = TABS.find(t => t.id === activeTab)?.label;
-    document.title = `${dashboardData.title} · ${activeTabLabel ?? 'Dashboard'}`;
-  }, [dashboardData.title, activeTab]);
+    document.title = `${APP_TITLE} · ${activeLabel ?? 'Dashboard'}`;
+  }, [activeLabel]);
+
+  const collectionName = collections.find((item) => item.id === selectedCollection)?.name;
+  const platformsLabel = Object.keys(dashboardData.by_platform).filter((key) => dashboardData.by_platform[key] > 0).join(' / ');
 
   return (
     <div className={`app ${darkMode ? 'dark' : ''}`}>
@@ -185,8 +105,8 @@ function App() {
         <div className="sidebar-header">
           <div className="logo-mark">H</div>
           <div>
-            <div className="app-name">{dashboardData.title}</div>
-            <div className="app-sub">{dashboardData.subtitle}</div>
+            <div className="app-name">{APP_TITLE}</div>
+            <div className="app-sub">{APP_SUBTITLE}</div>
           </div>
         </div>
 
@@ -204,13 +124,9 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="db-badge">
-            <span className="db-dot" />
-            {dashboardData.subtitle}
-          </div>
           <div className="stat-row">
-            <span>{fmtNum(dashboardData.total_posts)} posts</span>
-            <span>{Object.keys(dashboardData.by_platform || {}).join(' / ') || 'Plateformes inconnues'}</span>
+            <span>{fmtNum(dashboardData.total_posts)} posts sélectionnés</span>
+            <span>{platformsLabel}</span>
           </div>
           <div className="sidebar-user">
             <span className="sidebar-user-name">{user.name}</span>
@@ -239,20 +155,16 @@ function App() {
         <div className="page-header">
           <div>
             <h1 className="page-title">
-              {dashboardData.title} · {TABS.find(t => t.id === activeTab)?.label}
+              {APP_TITLE} · {activeLabel}
             </h1>
             <p className="page-sub">
-              {activeTab === 'overview' && `${dashboardData.subtitle} · Analyse des données collectées · FIFA World Cup 2026 Opening Ceremony`}
-              {activeTab === 'posts' && 'Lire, qualifier et annoter les publications X et Bluesky de la sélection'}
-              {activeTab === 'threads' && (selectedPost ? `Conversation du post de @${selectedPost.author_handle}` : 'Conversations reconstruites à partir des réponses collectées')}
-              {activeTab === 'graphs' && graphSubtitle}
-              {activeTab === 'users' && 'Créer les comptes, attribuer les rôles et désactiver un accès'}
+              {activeTab === 'threads' && selectedPost ? `Conversation du post de @${selectedPost.author_handle}` : PAGE_SUBTITLES[activeTab]}
             </p>
             {activeTab !== 'users' && (
               <>
                 <DashboardFilters
                   collections={collections}
-                  languages={dashboardData.by_lang || {}}
+                  languages={dashboardData.by_lang}
                   selectedCollection={selectedCollection}
                   platform={platform}
                   language={lang}
@@ -266,8 +178,8 @@ function App() {
                 />
                 <div className="page-highlight">
                   <span className="db-dot" />
-                  <span>Surveillance claire · points clés mis en avant</span>
-                  {loadingWidgets && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Mise à jour...</span>}
+                  <span>Sélection : {collectionName || 'toutes les collectes'} · {fmtNum(dashboardData.total_posts)} posts</span>
+                  {loadingWidgets && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Mise à jour…</span>}
                 </div>
               </>
             )}
@@ -277,7 +189,7 @@ function App() {
         <div className="content">
           {loadingData && (
             <div style={{ padding: '2rem', color: 'var(--text-secondary)' }}>
-              Chargement des données depuis MongoDB...
+              Chargement des données…
             </div>
           )}
           {loadingError && (
@@ -286,12 +198,12 @@ function App() {
             </div>
           )}
           {!loadingData && !loadingError && (
-            <>
+            <ErrorBoundary resetKey={activeTab}>
               {activeTab === 'overview' && <OverviewTab data={dashboardData} selectedCollection={selectedCollection} timeline={timeline} />}
               {activeTab === 'posts' && (
                 <ExplorerTab
                   filters={filters}
-                  platformCounts={dashboardData.by_platform || {}}
+                  platformCounts={dashboardData.by_platform}
                   onOpenThread={handleSelectPost}
                 />
               )}
@@ -302,11 +214,9 @@ function App() {
                   onClearHighlight={() => setSelectedPost(null)}
                 />
               )}
+              {activeTab === 'graphs' && <GraphsTab filters={filters} />}
               {activeTab === 'users' && isAdmin && <UsersTab />}
-              {activeTab === 'graphs' && (
-                <GraphsTab posts={dashboardData.posts} graphData={graphs || undefined} filters={filters} onGraphChange={setGraphSubtitle} />
-              )}
-            </>
+            </ErrorBoundary>
           )}
         </div>
       </main>

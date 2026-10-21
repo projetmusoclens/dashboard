@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { KeyRound, UserPlus } from 'lucide-react';
-import { createUser, listUsers, updateUser, User, UserRole } from '../services/api';
+import api from '../services/api';
+import { User, UserRole } from '../types';
 import { useAuth } from './AuthGate';
 
 const cardStyle: React.CSSProperties = { background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '1.25rem', marginBottom: '1rem' };
@@ -29,7 +30,7 @@ const UsersTab: React.FC = () => {
 
   const refresh = useCallback(() => {
     setLoading(true);
-    listUsers()
+    api.listUsers()
       .then((result) => setUsers(result.users))
       .catch((error) => setMessage({ text: error.message, error: true }))
       .finally(() => setLoading(false));
@@ -54,7 +55,7 @@ const UsersTab: React.FC = () => {
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     const created = { ...form, username: form.username.trim().toLowerCase() };
-    run(() => createUser(created), `Compte « ${created.username} » créé. Mot de passe à transmettre : ${created.password}`)
+    run(() => api.createUser(created), `Compte « ${created.username} » créé. Mot de passe à transmettre : ${created.password}`)
       .then(() => setForm({ username: '', name: '', password: suggestPassword(), role: 'annotateur' }));
   };
 
@@ -62,7 +63,7 @@ const UsersTab: React.FC = () => {
     const proposal = suggestPassword();
     const password = window.prompt(`Nouveau mot de passe pour ${target.username} (8 caractères minimum) :`, proposal);
     if (!password) return;
-    run(() => updateUser(target.id, { password }), `Mot de passe de « ${target.username} » réinitialisé : ${password}. Ses sessions ouvertes sont fermées.`);
+    run(() => api.updateUser(target.id, { password }), `Mot de passe de « ${target.username} » réinitialisé : ${password}. Ses sessions ouvertes sont fermées.`);
   };
 
   return (
@@ -120,7 +121,7 @@ const UsersTab: React.FC = () => {
                     <td style={{ padding: '0.6rem 0.5rem', fontWeight: 700 }}>{user.username}{user.id === me.id && <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> (vous)</span>}</td>
                     <td style={{ padding: '0.6rem 0.5rem' }}>{user.name}</td>
                     <td style={{ padding: '0.6rem 0.5rem' }}>
-                      <select aria-label={`Rôle de ${user.username}`} value={user.role} disabled={busy || user.id === me.id} onChange={(event) => run(() => updateUser(user.id, { role: event.target.value as UserRole }), `Rôle de « ${user.username} » modifié.`)} style={{ ...inputStyle, padding: '5px 8px' }}>
+                      <select aria-label={`Rôle de ${user.username}`} value={user.role} disabled={busy || user.id === me.id} onChange={(event) => run(() => api.updateUser(user.id, { role: event.target.value as UserRole }), `Rôle de « ${user.username} » modifié.`)} style={{ ...inputStyle, padding: '5px 8px' }}>
                         <option value="annotateur">Annotateur</option>
                         <option value="admin">Administrateur</option>
                       </select>
@@ -132,7 +133,7 @@ const UsersTab: React.FC = () => {
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         <button type="button" disabled={busy} style={buttonStyle} onClick={() => resetPassword(user)}><KeyRound size={13} /> Mot de passe</button>
                         {user.id !== me.id && (
-                          <button type="button" disabled={busy} style={{ ...buttonStyle, color: user.active ? '#e34948' : 'var(--text-primary)' }} onClick={() => run(() => updateUser(user.id, { active: !user.active }), user.active ? `« ${user.username} » désactivé : il ne peut plus se connecter.` : `« ${user.username} » réactivé.`)}>
+                          <button type="button" disabled={busy} style={{ ...buttonStyle, color: user.active ? '#e34948' : 'var(--text-primary)' }} onClick={() => run(() => api.updateUser(user.id, { active: !user.active }), user.active ? `« ${user.username} » désactivé : il ne peut plus se connecter.` : `« ${user.username} » réactivé.`)}>
                             {user.active ? 'Désactiver' : 'Réactiver'}
                           </button>
                         )}

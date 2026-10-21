@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { Lock } from 'lucide-react';
-import { AUTH_REQUIRED_EVENT, getSession, login, storeToken, User } from '../services/api';
+import api, { AUTH_REQUIRED_EVENT, storeToken } from '../services/api';
+import { User } from '../types';
 
 type GateState = 'checking' | 'locked' | 'open' | 'unreachable';
 
@@ -37,7 +38,7 @@ const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     setSlow(false);
     // L'hébergement gratuit met l'API en veille : le premier appel peut prendre une minute.
     const hint = window.setTimeout(() => { if (mounted) setSlow(true); }, WAKE_UP_HINT_MS);
-    getSession()
+    api.getSession()
       .then((sessionUser) => {
         if (!mounted) return;
         setUser(sessionUser);
@@ -76,7 +77,7 @@ const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     setSubmitting(true);
     setError(null);
     try {
-      const result = await login(username.trim(), password);
+      const result = await api.login(username.trim(), password);
       if (result === 'invalid') setError('Identifiant ou mot de passe incorrect.');
       else if (result === 'locked') setError('Trop de tentatives. Réessayez dans 15 minutes.');
       else {

@@ -1,7 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { lightPost, missingRoot, resolveRoots, selectConversations, summarizeConversations } = require('./conversations');
-const { buildThreads } = require('./analytics');
 
 const post = (id, parent, author = id, ts = '2026-07-01T10:00:00Z') => lightPost({ post_id: id, reply_to_id: parent, author_handle: author, timestamp: ts, platform: 'twitter', engagement: { likes: 1 } });
 const known = (...posts) => new Map(posts.map((item) => [item.post_id, item]));
@@ -35,11 +34,4 @@ test('summarizes conversations without counting a reply as its own parent', () =
 test('builds links for missing roots', () => {
   assert.deepEqual(missingRoot('42', { raw_json: { tweet: { inReplyToUsername: 'FIFAWorldCup' } } }), { post_id: '42', platform: 'twitter', author_handle: 'FIFAWorldCup', url: 'https://x.com/FIFAWorldCup/status/42', missing: true });
   assert.equal(missingRoot('at://did:plc:a/app.bsky.feed.post/3k').url, 'https://bsky.app/profile/did:plc:a/post/3k');
-});
-
-test('legacy threads never use a reply as its own parent', () => {
-  const threads = buildThreads([{ post_id: 'x', reply_to_id: 'gone', platform: 'twitter' }]);
-  assert.equal(threads[0].parent.post_id, 'gone');
-  assert.equal(threads[0].parent.missing, true);
-  assert.deepEqual(threads[0].replies.map((item) => item.post_id), ['x']);
 });

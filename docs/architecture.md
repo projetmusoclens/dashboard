@@ -12,11 +12,12 @@ Les routes lisent et valident les paramètres, les services normalisent les docu
 | --- | --- |
 | `server/index.js` | Création Express, middleware, gestion d’erreurs et enregistrement des modules de routes. |
 | `server/db/data-source.js` | Configuration MongoDB, connexion, choix de source et restauration/lecture d’archive. |
-| `server/routes/posts.js` | Routes `/api/dashboard`, `/api/posts` (pagination `limit`/`skip`, tri `sort`), `/api/threads` et `/api/collection-runs`. |
+| `server/routes/posts.js` | Routes `/api/posts` (pagination `limit`/`skip`, tri `sort`, recherche `q`, type `kind`) et `/api/collection-runs`. |
 | `server/routes/analytics.js` | Routes `/api/stats`, `/api/graph`, `/api/stats/timeline` (pas adaptatif) et `POST /api/graph/subgraph` (posts d’un sous-graphe). |
 | `server/routes/conversations.js` | Routes `/api/conversations` (liste paginée, mise en cache par filtres) et `/api/conversation` (arbre complet depuis une racine ou un post). |
 | `server/routes/accounts.js` | Connexion, compte courant, gestion des utilisateurs (admin) et annotations (`/api/annotations`, import, export). |
 | `server/services/conversations.js` | Rattachement des réponses à leur racine (collectée ou manquante) et résumés de conversations. |
+| `server/services/blueskyProfiles.js` | Noms, pseudos et avatars des comptes Bluesky (API publique de Bluesky, cache mémoire et collection `bluesky_profiles`, 7 jours). |
 | `server/services/accounts.js` | Hachage scrypt, jetons signés HMAC, validation, stockage MongoDB ou mémoire, création du premier admin. |
 | `server/middleware/auth.js` | Vérification du jeton de session, rôle admin et limitation des échecs de connexion. |
 | `server/routes/collections.js` | Route `/api/collections`, avec agrégation côté Mongo ou regroupement du fallback archive. |
@@ -38,7 +39,9 @@ La clé est dérivée des données : il n’existe pas de liste codée en dur ni
 | Fichier | Responsabilité |
 | --- | --- |
 | `src/index.tsx` | Point de montage React et styles globaux. |
-| `src/App.tsx` | Navigation, état global, chargement API, filtres et thème. |
+| `src/App.tsx` | Navigation, filtres, statistiques de la vue globale et thème ; chaque autre onglet charge ses propres données à l’ouverture. |
+| `src/config.tsx` | Titre, onglets et limites des graphes. |
+| `src/components/ErrorBoundary.tsx` | Message d’erreur à la place d’une page blanche si un onglet plante. |
 | `src/App.css` et `src/index.css` | Mise en page et styles globaux. |
 | `src/components/OverviewTab.tsx` | Indicateurs et graphiques de synthèse. |
 | `src/components/ExplorerTab.tsx` | Lecteur-annotateur : liste filtrable, lecture, détails, annotation locale, import JSONL et exports. |
@@ -50,9 +53,10 @@ La clé est dérivée des données : il n’existe pas de liste codée en dur ni
 | `src/components/ChangePasswordDialog.tsx` | Changement de son mot de passe. |
 | `src/components/GuidedTour.tsx` | Tour guidé relançable et navigation entre les vues. |
 | `src/components/KpiCard.tsx` | Carte réutilisable d’indicateur. |
-| `src/services/api.ts` | Fonctions HTTP et types de réponse API. |
-| `src/types/index.ts` | Modèles TypeScript partagés du dashboard. |
-| `src/data/dashboardData.ts` | Valeurs initiales, libellés de langues et couleurs de graphiques. |
+| `src/services/api.ts` | Appels HTTP : toutes les fonctions sont dans l’objet `api` (jeton de session ajouté, 401 renvoyant à la connexion). |
+| `src/types/index.ts` | Modèles métier partagés (`Post`, `DashboardData`…). |
+| `src/types/api.ts` | Formats des requêtes et réponses de l’API. |
+| `src/data/dashboardData.ts` | Données vides, construction des données de la vue globale depuis `/api/stats`, libellés de langues et couleurs. |
 | `src/utils/format.ts` | Formatage partagé des nombres et valeurs. |
 | `src/utils/languages.ts` | Libellés de langues et regroupement « Autres ». |
 | `src/utils/postRecord.ts` | Vue lecteur d’un post (raw_json X / Bluesky) et import de fichiers. |
@@ -79,3 +83,7 @@ Ajoutez toute nouvelle variable backend à `server/.env.example` et au tableau d
 ## Index MongoDB
 
 Au démarrage, l’API crée si besoin les index `posts.post_id`, `posts.reply_to_id`, `users.username` (unique) et `annotations.{user_id, platform, post_id}` (unique). `createIndex` est sans effet quand l’index existe : un déploiement les crée donc sur Atlas sans manipulation. Si l’utilisateur Atlas n’a pas les droits d’écriture, un avertissement est journalisé et l’API continue (conversations plus lentes).
+
+## Graphes
+
+`GET /api/graph` parcourt les posts filtrés, compte nœuds et arêtes, puis ne renvoie que les `maxNodes` nœuds les plus fréquents (5 000 au plus) et les arêtes d’un poids au moins `minEdgeWeight`, avec `total_nodes` / `total_links` pour le volume complet. Les réponses de l’API sont compressées (gzip). Le rendu utilise Sigma.js (WebGL) sur un graphe graphology ; ForceAtlas2 et Noverlap tournent dans un web worker, la force simple image par image, les autres dispositions sont calculées puis animées. Dans le graphe des mentions, les comptes Bluesky sont identifiés par leur DID (auteurs et facets de mention) et étiquetés avec leur pseudo.

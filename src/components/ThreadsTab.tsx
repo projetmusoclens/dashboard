@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Download, ExternalLink, Eye, Heart, MessageCircle, Repeat2, Search, Users, X } from 'lucide-react';
-import api, { ConversationDetail, ConversationList, ConversationRoot, ConversationSort, ConversationSummary, QueryParams } from '../services/api';
-import { Post } from '../types';
+import api from '../services/api';
+import { ConversationDetail, ConversationList, ConversationRoot, ConversationSort, ConversationSummary, Post, QueryParams } from '../types';
 import { fmtNum } from '../utils/format';
 import { downloadFile, fileSlug, toCsv } from '../utils/download';
 import { safeUrl, toRecord } from '../utils/postRecord';

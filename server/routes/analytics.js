@@ -17,8 +17,9 @@ const {
   timelineRowsFromPosts,
 } = require('../services/analytics');
 
-const GRAPH_MAX_NODES = 300;
-const SUBGRAPH_MAX_NODES = 2000;
+const GRAPH_DEFAULT_NODES = 300;
+const GRAPH_MAX_NODES = 5000;
+const SUBGRAPH_MAX_NODES = GRAPH_MAX_NODES;
 const SUBGRAPH_DEFAULT_POSTS = 5000;
 const SUBGRAPH_MAX_POSTS = 20000;
 const FILTER_KEYS = ['collectionId', 'platform', 'lang', 'startDate', 'endDate'];
@@ -31,6 +32,7 @@ function registerAnalyticsRoutes(app, {
   buildGraphFromPosts,
   buildMatchFromQuery,
   safeHandler,
+  profiles,
 }) {
   app.get('/api/stats', safeHandler(async (req, res) => {
     const dataSource = getDataSource();
@@ -102,18 +104,25 @@ function registerAnalyticsRoutes(app, {
 
   app.get('/api/graph', safeHandler(async (req, res) => {
     const type = req.query.type === 'mentions' ? 'mentions' : 'hashtags';
-    const maxNodes = Math.min(Number(req.query.maxNodes) || GRAPH_MAX_NODES, 2000);
+    const maxNodes = Math.min(Math.max(Number(req.query.maxNodes) || GRAPH_DEFAULT_NODES, 1), GRAPH_MAX_NODES);
+    const minEdgeWeight = Math.max(Number(req.query.minEdgeWeight) || 1, 1);
     const dataSource = getDataSource();
-    if (dataSource.mode === 'none') return res.json({ nodes: [], links: [] });
+    if (dataSource.mode === 'none') return res.json({ nodes: [], links: [], total_nodes: 0, total_links: 0 });
+    let graph;
     if (dataSource.mode === 'archive') {
       const posts = dataSource.posts.map(normalizePost).filter((post) => matchesPostQuery(post, req.query));
-      return res.json(buildGraphFromPosts(posts, type, maxNodes));
+      graph = buildGraphFromPosts(posts, type, maxNodes, { minEdgeWeight });
+    } else {
+      const match = buildMatchFromQuery(req.query);
+      const projection = { _id: 0, text: 1, author_handle: 1, platform: 1, 'raw_json.facets': 1 };
+      const cursor = dataSource.db.collection('posts').find(Object.keys(match).length ? match : {}, { projection });
+      const builder = createGraphBuilder(type);
+      for await (const post of cursor) builder.add(post);
+      graph = builder.result(maxNodes, { minEdgeWeight });
     }
-    const match = buildMatchFromQuery(req.query);
-    const cursor = dataSource.db.collection('posts').find(Object.keys(match).length ? match : {}, { projection: { _id: 0, text: 1, author_handle: 1 } });
-    const builder = createGraphBuilder(type);
-    for await (const post of cursor) builder.add(post);
-    return res.json(builder.result(maxNodes));
+    // Comptes Bluesky : le nœud garde son DID comme identifiant, le libellé devient le pseudo.
+    if (type === 'mentions') await profiles.labelGraphNodes(graph.nodes.filter((node) => node.id.startsWith('@did:')));
+    return res.json(graph);
   }));
 
   // Courbe des posts : agrégation à la minute puis regroupement adaptatif dans buildTimeline.
@@ -174,14 +183,20 @@ function registerAnalyticsRoutes(app, {
       // Pré-filtre Mongo large (sous-chaîne) ; matchSubgraphPost applique ensuite la règle exacte du graphe.
       // raw_json reste lu : il sert à détecter retweets et citations avant d'être retiré.
       const terms = nodes.map((node) => escapeRegex(node.replace(/^[#@]/, ''))).join('|');
+      const dids = nodes.filter((node) => node.startsWith('@did:')).map((node) => node.slice(1));
       const prefilter = type === 'mentions'
-        ? { $or: [{ text: new RegExp(`@(?:${terms})`, 'i') }, { author_handle: new RegExp(`^(?:${terms})$`, 'i') }] }
+        ? { $or: [
+          { text: new RegExp(`@(?:${terms})`, 'i') },
+          { author_handle: new RegExp(`^(?:${terms})$`, 'i') },
+          ...(dids.length ? [{ 'raw_json.facets.features.did': { $in: dids } }] : []),
+        ] }
         : { text: new RegExp(`#(?:${terms})`, 'i') };
       const filterMatch = buildMatchFromQuery(filters);
       const query = Object.keys(filterMatch).length ? { $and: [filterMatch, prefilter] } : prefilter;
       const cursor = dataSource.db.collection('posts').find(query);
       for await (const post of cursor) collect(post);
     }
+    await profiles.enrichPosts(posts);
     return res.json({ type, posts, matched, truncated: matched > posts.length });
   }));
 }

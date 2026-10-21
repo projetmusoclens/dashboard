@@ -12,8 +12,49 @@ import circlepack from 'graphology-layout/circlepack';
 // @ts-ignore
 import louvain from 'graphology-communities-louvain';
 
+// Réglages exposés dans « Paramètres avancés » ; chaque disposition n'utilise que les siens.
+export interface LayoutParams {
+  spacing: number;            // ForceAtlas2 : scalingRatio = 10 × spacing ; force : répulsion ; anneaux et niveaux : écart
+  gravity: number;            // ForceAtlas2 : attraction vers le centre
+  strongGravity: boolean;     // ForceAtlas2 : gravité forte (graphes déconnectés plus compacts)
+  linLog: boolean;            // ForceAtlas2 : mode LinLog, communautés plus séparées
+  edgeWeightInfluence: number; // ForceAtlas2 : 0 = poids ignorés, 1 = proportionnel
+  barnesHut: 'auto' | 'on' | 'off'; // ForceAtlas2 : approximation rapide pour les grands graphes (auto : > 500 nœuds)
+  durationSec: number;        // durée du calcul en tâche de fond (ForceAtlas2, force)
+  noverlapMargin: number;     // Noverlap : marge entre nœuds
+  resolution: number;         // Louvain : > 1 = plus de communautés, < 1 = moins
+}
+
+export const DEFAULT_LAYOUT_PARAMS: LayoutParams = {
+  spacing: 1,
+  gravity: 0.05,
+  strongGravity: true,
+  linLog: false,
+  edgeWeightInfluence: 1,
+  barnesHut: 'auto',
+  durationSec: 4,
+  noverlapMargin: 2,
+  resolution: 1,
+};
+
 export type LayoutId = 'forceatlas2' | 'forceatlas2-noverlap' | 'force' | 'communities' | 'circular' | 'concentric' | 'radial' | 'hierarchical';
 export type Positions = Record<string, { x: number; y: number }>;
+
+export type LayoutParamKey = keyof LayoutParams;
+
+const FA2_PARAMS: LayoutParamKey[] = ['spacing', 'gravity', 'strongGravity', 'linLog', 'edgeWeightInfluence', 'barnesHut', 'durationSec'];
+
+// Paramètres pertinents pour chaque disposition.
+export const LAYOUT_PARAM_KEYS: Record<LayoutId, LayoutParamKey[]> = {
+  forceatlas2: FA2_PARAMS,
+  'forceatlas2-noverlap': [...FA2_PARAMS, 'noverlapMargin'],
+  force: ['spacing', 'durationSec'],
+  communities: ['resolution'],
+  circular: ['resolution'],
+  concentric: ['spacing'],
+  radial: ['spacing'],
+  hierarchical: ['spacing'],
+};
 
 export const LAYOUTS: { id: LayoutId; label: string; description: string; usesSpacing: boolean }[] = [
   { id: 'forceatlas2', label: 'Force-directed (ForceAtlas2)', description: 'Disposition par défaut : les nœuds liés se rapprochent. Adaptée aux petits et moyens graphes.', usesSpacing: true },
@@ -53,7 +94,7 @@ function withSeededPositions(graph: any) {
 const edgeWeight = (_edge: string, attributes: any) => Math.log1p(Number(attributes?.weight) || 1);
 
 // Communautés Louvain ; un graphe sans arête donne une communauté par composante triviale.
-export function detectCommunities(graph: any): Record<string, number> {
+export function detectCommunities(graph: any, resolution = 1): Record<string, number> {
   if (!graph.order) return {};
   if (!graph.size) {
     const result: Record<string, number> = {};
@@ -61,7 +102,7 @@ export function detectCommunities(graph: any): Record<string, number> {
     return result;
   }
   try {
-    return louvain(graph, { getEdgeWeight: 'weight', rng: seededRandom(7) });
+    return louvain(graph, { getEdgeWeight: 'weight', resolution, rng: seededRandom(7) });
   } catch {
     const result: Record<string, number> = {};
     graph.forEachNode((node: string) => { result[node] = 0; });
@@ -69,32 +110,43 @@ export function detectCommunities(graph: any): Record<string, number> {
   }
 }
 
-function forceAtlasPositions(graph: any, spacing: number): Positions {
+function fa2Settings(graph: any, params: LayoutParams) {
+  return {
+    ...forceAtlas2.inferSettings(graph),
+    scalingRatio: 10 * params.spacing,
+    gravity: params.gravity,
+    strongGravityMode: params.strongGravity,
+    linLogMode: params.linLog,
+    edgeWeightInfluence: params.edgeWeightInfluence,
+    barnesHutOptimize: params.barnesHut === 'auto' ? graph.order > 500 : params.barnesHut === 'on',
+  };
+}
+
+const noverlapSettings = (params: LayoutParams) => ({ margin: params.noverlapMargin, ratio: 1.4, expansion: 1.1 });
+const springSettings = (params: LayoutParams) => ({ attraction: 0.0005, repulsion: 0.1 * params.spacing, gravity: 0.0001, inertia: 0.6, maxMove: 200 });
+
+function forceAtlasPositions(graph: any, params: LayoutParams): Positions {
   const copy = withSeededPositions(graph);
   const order = copy.order;
-  const inferred = forceAtlas2.inferSettings(copy);
   return forceAtlas2(copy, {
     iterations: order < 500 ? 300 : order < 1500 ? 150 : 100,
     getEdgeWeight: edgeWeight,
-    settings: { ...inferred, barnesHutOptimize: order > 500, scalingRatio: 10 * spacing },
+    settings: fa2Settings(copy, params),
   });
 }
 
-function withNoverlap(graph: any, positions: Positions): Positions {
+function withNoverlap(graph: any, positions: Positions, params: LayoutParams): Positions {
   const copy = graph.copy();
   copy.forEachNode((node: string) => {
     copy.setNodeAttribute(node, 'x', positions[node].x);
     copy.setNodeAttribute(node, 'y', positions[node].y);
   });
-  return noverlap(copy, { maxIterations: 150, settings: { margin: 2, ratio: 1.4, expansion: 1.1 } });
+  return noverlap(copy, { maxIterations: 150, settings: noverlapSettings(params) });
 }
 
-function springPositions(graph: any, spacing: number): Positions {
+function springPositions(graph: any, params: LayoutParams): Positions {
   const copy = withSeededPositions(graph);
-  return forceLayout(copy, {
-    maxIterations: copy.order > 1000 ? 120 : 300,
-    settings: { attraction: 0.0005, repulsion: 0.1 * spacing, gravity: 0.0001, inertia: 0.6, maxMove: 200 },
-  });
+  return forceLayout(copy, { maxIterations: copy.order > 1000 ? 120 : 300, settings: springSettings(params) });
 }
 
 function byCommunityThenDegree(graph: any): string[] {
@@ -209,18 +261,76 @@ function hierarchicalPositions(graph: any, focus: string | null, spacing: number
   return positions;
 }
 
-export function computeLayout(graph: any, layout: LayoutId, { spacing = 1, focus = null }: { spacing?: number; focus?: string | null } = {}): Positions {
+// Calcul synchrone (tests, navigateurs sans web worker, dispositions géométriques).
+export function computeLayout(graph: any, layout: LayoutId, { params = DEFAULT_LAYOUT_PARAMS, focus = null }: { params?: LayoutParams; focus?: string | null } = {}): Positions {
   if (!graph.order) return {};
+  const { spacing } = params;
   switch (layout) {
-    case 'forceatlas2-noverlap': return withNoverlap(graph, forceAtlasPositions(graph, spacing));
-    case 'force': return springPositions(graph, spacing);
+    case 'forceatlas2-noverlap': return withNoverlap(graph, forceAtlasPositions(graph, params), params);
+    case 'force': return springPositions(graph, params);
     case 'communities': return circlepack(graph, { hierarchyAttributes: ['community'], rng: seededRandom(3), scale: 100 });
     case 'circular': return circularPositions(graph);
     case 'concentric': return concentricPositions(graph, spacing);
     case 'radial': return radialPositions(graph, focus, spacing);
     case 'hierarchical': return hierarchicalPositions(graph, focus, spacing);
-    default: return forceAtlasPositions(graph, spacing);
+    default: return forceAtlasPositions(graph, params);
   }
+}
+
+export const usesBackgroundLayout = (layout: LayoutId) => layout === 'forceatlas2' || layout === 'forceatlas2-noverlap' || layout === 'force';
+
+// Exécute une disposition de force en continu sur le graphe affiché, sans figer la page :
+// ForceAtlas2 et Noverlap dans un web worker, la force simple image par image. Le graphe se met en
+// place sous les yeux de l'utilisateur. Renvoie une fonction d'arrêt.
+// Les modules « worker » de graphology exportent leur classe directement (CommonJS), sans `default`.
+const workerClass = (module: any) => module?.default || module;
+
+export function runBackgroundLayout(graph: any, layout: LayoutId, params: LayoutParams, onDone: () => void): () => void {
+  /* eslint-disable @typescript-eslint/no-var-requires */
+  const timers: number[] = [];
+  const supervisors: any[] = [];
+  let finished = false;
+  const stopAll = () => {
+    timers.forEach((timer) => window.clearTimeout(timer));
+    supervisors.forEach((supervisor) => { try { supervisor.kill(); } catch { /* déjà arrêté */ } });
+    supervisors.length = 0;
+  };
+  const done = () => {
+    if (finished) return;
+    finished = true;
+    stopAll();
+    onDone();
+  };
+
+  // Départ identique à chaque calcul : mêmes réglages, même résultat d'ensemble.
+  const random = seededRandom(42);
+  graph.updateEachNodeAttributes((_node: string, attributes: any) => ({ ...attributes, x: (random() - 0.5) * 100, y: (random() - 0.5) * 100 }));
+  const duration = Math.max(1, params.durationSec) * 1000;
+
+  if (layout === 'force') {
+    const ForceSupervisor = workerClass(require('graphology-layout-force/worker'));
+    const supervisor = new ForceSupervisor(graph, { settings: springSettings(params), onConverged: done });
+    supervisors.push(supervisor);
+    supervisor.start();
+    timers.push(window.setTimeout(done, duration));
+    return () => { finished = true; stopAll(); };
+  }
+
+  const FA2Layout = workerClass(require('graphology-layout-forceatlas2/worker'));
+  const fa2 = new FA2Layout(graph, { settings: fa2Settings(graph, params), getEdgeWeight: edgeWeight });
+  supervisors.push(fa2);
+  fa2.start();
+  timers.push(window.setTimeout(() => {
+    fa2.stop();
+    if (layout !== 'forceatlas2-noverlap') { done(); return; }
+    const NoverlapLayout = workerClass(require('graphology-layout-noverlap/worker'));
+    const spread = new NoverlapLayout(graph, { settings: noverlapSettings(params), onConverged: done });
+    supervisors.push(spread);
+    spread.start();
+    timers.push(window.setTimeout(done, 4000));
+  }, duration));
+  return () => { finished = true; stopAll(); };
+  /* eslint-enable @typescript-eslint/no-var-requires */
 }
 
 // Le layout dépend du nœud sélectionné seulement pour les dispositions centrées sur lui.
