@@ -60,13 +60,19 @@ const POST_INDEXES = [
   { key: { reply_to_id: 1 }, name: 'reply_to_id_1' },
 ];
 
+// Un index déjà présent sur les mêmes champs (même avec d'autres options, unique par exemple) suffit.
 async function ensureIndexes(database, label) {
   if (!database) return;
+  const collection = database.collection('posts');
+  const existing = await collection.indexes().catch(() => []);
+  const sameKey = (left, right) => JSON.stringify(left) === JSON.stringify(right);
   for (const index of POST_INDEXES) {
+    if (existing.some((item) => sameKey(item.key, index.key))) continue;
     try {
-      await database.collection('posts').createIndex(index.key, { name: index.name });
+      await collection.createIndex(index.key, { name: index.name });
+      console.log(`Index ${index.name} créé sur ${label}.`);
     } catch (error) {
-      console.warn(`Index ${index.name} non créé sur ${label} (droits en écriture ?) :`, error?.message || error);
+      console.warn(`Index ${index.name} non créé sur ${label} :`, error?.message || error);
     }
   }
 }

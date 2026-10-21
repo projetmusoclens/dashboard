@@ -151,7 +151,11 @@ function createMemoryStore() {
 
 // Crée le premier administrateur à partir de ADMIN_USERNAME / ADMIN_PASSWORD si aucun compte n'existe.
 async function bootstrapAdmin(store, { username, password, name } = {}) {
-  if (await store.countUsers() > 0) return null;
+  const existing = await store.countUsers();
+  if (existing > 0) {
+    console.log(`${existing} compte(s) existant(s) : ADMIN_USERNAME / ADMIN_PASSWORD ne sont pas utilisés.`);
+    return null;
+  }
   if (!username || !password) {
     console.warn('Aucun compte utilisateur : définissez ADMIN_USERNAME et ADMIN_PASSWORD pour créer le premier administrateur.');
     return null;
