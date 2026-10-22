@@ -14,7 +14,9 @@ export interface User {
   annotations?: number;
 }
 
+// Une annotation : un même post peut en recevoir plusieurs, de la même personne ou d'autres.
 export interface StoredAnnotation {
+  id: string;
   user_id: string;
   username: string;
   platform: 'twitter' | 'bluesky';
@@ -27,8 +29,43 @@ export interface StoredAnnotation {
   keywords: string;
   note: string;
   updated_at: string;
-  created_at?: string;
+  created_at: string;
   post?: { text: string; author_handle: string; timestamp: string; collection_name: string; lang: string } | null;
+  // Annotations d'une autre personne : son nom affiché.
+  name?: string;
+  // Personnes avec qui cette annotation précise est partagée, et si le commentaire libre l'est aussi
+  // (visibles par son auteur seulement).
+  shared_with?: string[];
+  share_notes?: boolean;
+  // Annotation reçue dont le commentaire libre n'est pas partagé.
+  note_hidden?: boolean;
+}
+
+export interface UserProfile {
+  id: string;
+  username: string;
+  name: string;
+}
+
+// Post dont une annotation d'une autre personne m'est visible.
+export interface SharedPostRef {
+  platform: 'twitter' | 'bluesky';
+  post_id: string;
+  owners: string[];
+  updated_at: string;
+}
+
+export interface AnnotationShares {
+  shared_with: UserProfile[];
+  // « Tout partager » inclut-il les commentaires libres ?
+  include_notes: boolean;
+  shared_with_me: UserProfile[];
+}
+
+// Pour un post : mes annotations et celles des autres qui me sont visibles, des plus récentes aux plus anciennes.
+export interface PostAnnotations {
+  mine: StoredAnnotation[];
+  shared: StoredAnnotation[];
 }
 
 export interface QueryParams {
@@ -74,6 +111,8 @@ export interface TimelineResponse {
 }
 
 export interface PostsQuery extends QueryParams {
+  // Identifiants de posts séparés par des virgules (500 au plus).
+  ids?: string;
   limit?: number;
   skip?: number;
   sort?: PostSort;

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Maximize2, Minimize2 } from 'lucide-react';
 // Rendu Sigma.js (WebGL) sur un graphe graphology ; dispositions dans utils/graphLayouts.
 // @ts-ignore
 import Graph from 'graphology';
@@ -116,6 +117,11 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
   const [includeRaw, setIncludeRaw] = useState(false);
   const [exportState, setExportState] = useState<{ busy: boolean; message: string; error: boolean }>({ busy: false, message: '', error: false });
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Plein écran du graphe seul (sans réglages ni panneau latéral) : API du navigateur,
+  // ou plein fenêtre en CSS quand elle n'est pas disponible.
+  const canvasWrapRef = useRef<HTMLDivElement | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [pseudoFullscreen, setPseudoFullscreen] = useState(false);
   const sigmaRef = useRef<any>(null);
   const graphRef = useRef<any>(null);
   const appliedLayoutRef = useRef('');
@@ -382,6 +388,39 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
 
   useEffect(() => () => stopLayoutRef.current?.(), []);
 
+  useEffect(() => {
+    const onChange = () => setFullscreen(document.fullscreenElement === canvasWrapRef.current);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  useEffect(() => {
+    if (!pseudoFullscreen) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setPseudoFullscreen(false); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [pseudoFullscreen]);
+
+  // Le graphe change de taille : Sigma doit recalculer sa zone de dessin.
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const renderer = sigmaRef.current;
+      if (!renderer) return;
+      renderer.resize?.();
+      renderer.refresh?.();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [fullscreen, pseudoFullscreen]);
+
+  const isFullscreen = fullscreen || pseudoFullscreen;
+  const toggleFullscreen = () => {
+    if (pseudoFullscreen) { setPseudoFullscreen(false); return; }
+    if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
+    const target = canvasWrapRef.current;
+    if (target && document.fullscreenEnabled && target.requestFullscreen) target.requestFullscreen().catch(() => setPseudoFullscreen(true));
+    else setPseudoFullscreen(true);
+  };
+
   const centerOn = (node: string) => {
     const renderer = sigmaRef.current;
     const display = renderer?.getNodeDisplayData(node);
@@ -506,6 +545,9 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
           {showEdges ? 'Masquer les arêtes' : 'Afficher les arêtes'}
         </button>
         <button type="button" onClick={resetView} style={pillButton(false)}>Reset view</button>
+        <button type="button" onClick={toggleFullscreen} style={{ ...pillButton(isFullscreen, '#2a78d6'), display: 'inline-flex', alignItems: 'center', gap: 6 }} title={isFullscreen ? 'Quitter le plein écran (Échap)' : 'Afficher le graphe en plein écran'}>
+          {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />} {isFullscreen ? 'Quitter le plein écran' : 'Plein écran'}
+        </button>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 6, flexWrap: 'wrap' }}>
           <label htmlFor="graph-node-limit" style={{ fontSize: 12, color: 'var(--text-muted)' }} title="Les nœuds les plus fréquents sont gardés">Nœuds :</label>
           <input id="graph-node-limit" type="number" min={10} max={GRAPH_MAX_NODES} step={50} value={nodeLimitInput} onChange={(e) => setNodeLimitInput(Number(e.target.value))} style={{ ...inputStyle, width: 90 }} />
@@ -569,8 +611,13 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
       {loadError && <div style={{ ...cardStyle, color: '#e34948', fontSize: 13 }}>Graphe indisponible : {loadError}</div>}
 
       <div className="graphs-layout">
-        <div style={{ minHeight: 720, border: '1px solid var(--border)', borderRadius: 16, overflow: 'hidden', background: 'var(--card-bg)', position: 'relative' }}>
-          <div ref={containerRef} style={{ width: '100%', height: '100%', minHeight: 720 }} />
+        <div ref={canvasWrapRef} className={`graph-canvas-wrap ${pseudoFullscreen ? 'graph-canvas-wrap--fullscreen' : ''}`} style={{ minHeight: 720, border: '1px solid var(--border)', borderRadius: 16, overflow: 'hidden', background: 'var(--card-bg)', position: 'relative' }}>
+          <div ref={containerRef} className="graph-canvas" style={{ width: '100%', height: '100%', minHeight: 720 }} />
+          <button type="button" className="graph-fullscreen-button" onClick={toggleFullscreen} aria-label={isFullscreen ? 'Quitter le plein écran' : 'Afficher le graphe en plein écran'} title={isFullscreen ? 'Quitter le plein écran (Échap)' : 'Plein écran'}>
+            {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            {isFullscreen && <span>Quitter le plein écran</span>}
+          </button>
+          {isFullscreen && layoutBusy && <div className="graph-fullscreen-status">Calcul de la disposition…</div>}
           {!loading && graphData && filteredGraph.nodes.length === 0 && (
             <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Aucun nœud pour ces filtres.</div>
           )}

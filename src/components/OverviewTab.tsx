@@ -243,15 +243,26 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, selectedCollection = ''
         </div>
 
         <div style={cardStyle}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: '1rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
             <h3 style={{ ...titleStyle, marginBottom: 0 }}>{slide.title}</h3>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <button type="button" aria-label="Graphique précédent" style={arrowButtonStyle} onClick={() => setTypeSlide((typeSlide + typeSlides.length - 1) % typeSlides.length)}><ChevronLeft size={15} /></button>
-              {typeSlides.map((item, index) => (
-                <button key={item.title} type="button" aria-label={item.title} onClick={() => setTypeSlide(index)} style={{ width: 8, height: 8, padding: 0, borderRadius: 999, border: 0, cursor: 'pointer', background: index === typeSlide ? 'var(--accent)' : 'var(--border)' }} />
-              ))}
-              <button type="button" aria-label="Graphique suivant" style={arrowButtonStyle} onClick={() => setTypeSlide((typeSlide + 1) % typeSlides.length)}><ChevronRight size={15} /></button>
-            </div>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{typeSlide + 1} / {typeSlides.length}</span>
+          </div>
+          {/* Les trois comparaisons sont nommées pour qu'on voie d'emblée qu'il y en a d'autres. */}
+          <div role="tablist" aria-label="Comparaisons de types de posts" style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+            <button type="button" aria-label="Comparaison précédente" style={arrowButtonStyle} onClick={() => setTypeSlide((typeSlide + typeSlides.length - 1) % typeSlides.length)}><ChevronLeft size={15} /></button>
+            {typeSlides.map((item, index) => (
+              <button
+                key={item.title}
+                type="button"
+                role="tab"
+                aria-selected={index === typeSlide}
+                onClick={() => setTypeSlide(index)}
+                style={{ padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: 'pointer', border: `1px solid ${index === typeSlide ? 'var(--accent)' : 'var(--border)'}`, background: index === typeSlide ? 'var(--accent-dim)' : 'transparent', color: index === typeSlide ? 'var(--accent)' : 'var(--text-secondary)' }}
+              >
+                {item.part}
+              </button>
+            ))}
+            <button type="button" aria-label="Comparaison suivante" style={arrowButtonStyle} onClick={() => setTypeSlide((typeSlide + 1) % typeSlides.length)}><ChevronRight size={15} /></button>
           </div>
           <ResponsiveContainer width="100%" height={200}>
             <PieChart>

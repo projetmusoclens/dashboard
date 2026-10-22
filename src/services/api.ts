@@ -1,5 +1,5 @@
 import {
-  Collection, ConversationDetail, ConversationList, ConversationQuery, GraphQuery, GraphResponse, GraphType,
+  AnnotationShares, Collection, PostAnnotations, SharedPostRef, UserProfile, ConversationDetail, ConversationList, ConversationQuery, GraphQuery, GraphResponse, GraphType,
   Post, PostsQuery, QueryParams, StatsResponse, StoredAnnotation, SubgraphPostsResponse, TimelineResponse, User, UserRole,
 } from '../types';
 
@@ -73,6 +73,8 @@ async function login(username: string, password: string): Promise<{ token: strin
   return res.json();
 }
 
+type AnnotationFields = Pick<StoredAnnotation, 'status' | 'relevance' | 'theme' | 'tone' | 'interaction' | 'keywords' | 'note'>;
+
 const api = {
   // Session et comptes
   getSession,
@@ -85,9 +87,19 @@ const api = {
 
   // Annotations de l'utilisateur connecté (scope=all : toute l'équipe, administrateurs)
   getAnnotations: (scope: 'mine' | 'all' = 'mine') => request<{ annotations: StoredAnnotation[] }>(`/api/annotations${scope === 'all' ? '?scope=all' : ''}`),
-  saveAnnotation: (annotation: Partial<Omit<StoredAnnotation, 'platform'>> & { platform: string; post_id: string }) =>
-    request<{ annotation: StoredAnnotation }>('/api/annotations', { method: 'PUT', body: annotation }),
-  deleteAnnotation: (platform: string, postId: string) => request<{ ok: true }>('/api/annotations', { method: 'DELETE', body: { platform, post_id: postId } }),
+  // Champs d'annotation envoyés à l'API (statut, pertinence, thème, tonalité, interaction, mots-clés, commentaire).
+  createAnnotation: (platform: string, postId: string, fields: AnnotationFields) =>
+    request<{ annotation: StoredAnnotation }>('/api/annotations', { method: 'POST', body: { ...fields, platform, post_id: postId } }),
+  updateAnnotation: (id: string, fields: AnnotationFields) => request<{ annotation: StoredAnnotation }>(`/api/annotations/${encodeURIComponent(id)}`, { method: 'PUT', body: fields }),
+  deleteAnnotation: (id: string) => request<{ ok: true }>(`/api/annotations/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  shareAnnotation: (id: string, userIds: string[], includeNotes: boolean) =>
+    request<{ annotation: StoredAnnotation }>(`/api/annotations/${encodeURIComponent(id)}/share`, { method: 'PUT', body: { user_ids: userIds, include_notes: includeNotes } }),
+  getPostAnnotations: (platform: string, postId: string) => request<PostAnnotations>(`/api/annotations/post${buildQuery({ platform, post_id: postId })}`),
+  getSharedWithMe: () => request<{ posts: SharedPostRef[] }>('/api/annotations/shared-with-me'),
+  getDirectory: () => request<{ users: UserProfile[] }>('/api/users/directory'),
+  getShares: () => request<AnnotationShares>('/api/annotations/shares'),
+  setShares: (userIds: string[], includeNotes: boolean) =>
+    request<{ shared_with: string[]; include_notes: boolean }>('/api/annotations/shares', { method: 'PUT', body: { user_ids: userIds, include_notes: includeNotes } }),
   importAnnotations: (items: unknown[]) => request<{ imported: number; skipped: number }>('/api/annotations/import', { method: 'POST', body: { items } }),
   exportAnnotations: (scope: 'mine' | 'all') => request<{ annotations: StoredAnnotation[] }>(`/api/annotations/export${scope === 'all' ? '?scope=all' : ''}`),
 

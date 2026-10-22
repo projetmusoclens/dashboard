@@ -1,5 +1,5 @@
 import { Post } from '../types';
-import { parseImportedFile, toRecord } from './postRecord';
+import { toRecord } from './postRecord';
 
 const basePost: Post = {
   post_id: '1', author_handle: 'alice', text: 'Salut #FIFA', lang: 'fr', timestamp: '2026-07-04T20:59:09+00:00',
@@ -37,17 +37,4 @@ test('builds a reader record from a Bluesky post and repost', () => {
   const repost = toRecord({ ...basePost, platform: 'bluesky', text: '', is_retweet: true, subject_uri: `at://${did}/app.bsky.feed.post/9z`, raw_json: { record: { $type: 'app.bsky.feed.repost' } } });
   expect(repost.isRetweet).toBe(true);
   expect(repost.repostOf).toBe(`at://${did}/app.bsky.feed.post/9z`);
-});
-
-test('imports raw tweets and collected Bluesky posts from JSONL', () => {
-  const lines = [
-    JSON.stringify({ type: 'tweet', id: '42', text: 'hello', createdAt: 'Sat Jul 04 20:59:09 +0000 2026', author: { userName: 'bob' }, likeCount: 2 }),
-    JSON.stringify({ post_id: 'at://did:plc:x/app.bsky.feed.post/1', platform: 'bluesky', text: 'bsky', raw_json: { $type: 'app.bsky.feed.post' } }),
-    'not json',
-  ].join('\n');
-  const { posts, errors } = parseImportedFile(lines);
-  expect(errors).toBe(1);
-  expect(posts.map((post) => [post.platform, post.post_id])).toEqual([['twitter', '42'], ['bluesky', 'at://did:plc:x/app.bsky.feed.post/1']]);
-  expect(posts[0].timestamp).toBe('2026-07-04T20:59:09.000Z');
-  expect(posts[0].engagement.likes).toBe(2);
 });

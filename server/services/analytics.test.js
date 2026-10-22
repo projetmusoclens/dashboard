@@ -84,3 +84,9 @@ test('uses Bluesky facet DIDs for mentions and keeps edge totals', () => {
   assert.equal(filtered.total_nodes, 3);
   assert.equal(filtered.total_links, 2);
 });
+
+test('filters posts by a list of ids', () => {
+  const post = normalizePost({ platform: 'twitter', post_id: '7', text: '' });
+  assert.equal(matchesPostQuery(post, { ids: '1,7, 9' }), true);
+  assert.equal(matchesPostQuery(post, { ids: '1,9' }), false);
+});

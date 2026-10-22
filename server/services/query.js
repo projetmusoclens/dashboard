@@ -40,8 +40,16 @@ function postMatchesKind(post, kind) {
   return !post.is_retweet && !post.is_quote && !post.is_reply;
 }
 
+// Identifiants de posts passés en liste séparée par des virgules (?ids=…), 500 au plus.
+function queryIds(query) {
+  if (typeof query.ids !== 'string' || !query.ids) return null;
+  return [...new Set(query.ids.split(',').map((id) => id.trim()).filter(Boolean))].slice(0, 500);
+}
+
 function buildMatchFromQuery(query) {
   const conditions = [];
+  const ids = queryIds(query);
+  if (ids) conditions.push({ post_id: { $in: ids } });
   if (query.collectionId) {
     conditions.push({ $expr: { $eq: [mongoCollectionKeyExpression(), collectionKey(query.collectionId)] } });
   }
@@ -73,6 +81,8 @@ function buildMatchFromQuery(query) {
 }
 
 function matchesPostQuery(post, query) {
+  const ids = queryIds(query);
+  if (ids && !ids.includes(String(post.post_id))) return false;
   if (query.collectionId && collectionKey(post.collection_name) !== collectionKey(query.collectionId)) return false;
   if (query.platform && post.platform !== String(query.platform).toLowerCase()) return false;
   if (query.lang && post.lang !== String(query.lang).toLowerCase()) return false;

@@ -91,28 +91,40 @@ function createMongoStore(db) {
   const users = db.collection('users');
   const annotations = db.collection('annotations');
   const toUser = (doc) => (doc ? { ...doc, id: String(doc._id) } : null);
+  const toAnnotation = (doc) => {
+    if (!doc) return null;
+    const { _id, ...rest } = doc;
+    return { ...rest, id: String(_id) };
+  };
   const objectId = (id) => { try { return new ObjectId(String(id)); } catch { return null; } };
   return {
     kind: 'mongo',
     async init() {
       await users.createIndex({ username: 1 }, { unique: true, name: 'username_unique' });
-      await annotations.createIndex({ user_id: 1, platform: 1, post_id: 1 }, { unique: true, name: 'user_post_unique' });
+      // Plusieurs annotations par personne et par post : l'ancien index unique est retiré s'il existe.
+      await annotations.dropIndex('user_post_unique').catch(() => {});
+      await annotations.createIndex({ user_id: 1, platform: 1, post_id: 1 }, { name: 'user_post' });
+      await annotations.createIndex({ platform: 1, post_id: 1 }, { name: 'post' });
     },
     countUsers: () => users.countDocuments({}),
     countAdmins: () => users.countDocuments({ role: 'admin', active: { $ne: false } }),
     findUserByUsername: async (username) => toUser(await users.findOne({ username })),
     findUserById: async (id) => { const _id = objectId(id); return _id ? toUser(await users.findOne({ _id })) : null; },
     listUsers: async () => (await users.find({}).sort({ username: 1 }).toArray()).map(toUser),
+    listUsersSharingWith: async (viewerId) => (await users.find({ shared_with: String(viewerId) }).sort({ username: 1 }).toArray()).map(toUser),
     async insertUser(user) { const { insertedId } = await users.insertOne(user); return toUser({ ...user, _id: insertedId }); },
     async updateUser(id, patch) { const _id = objectId(id); if (!_id) return null; await users.updateOne({ _id }, { $set: patch }); return toUser(await users.findOne({ _id })); },
-    listAnnotations: (query) => annotations.find(query, { projection: { _id: 0 } }).toArray(),
-    countAnnotationsByUser: async () => Object.fromEntries((await annotations.aggregate([{ $group: { _id: '$user_id', n: { $sum: 1 } } }]).toArray()).map((row) => [row._id, row.n])),
-    async upsertAnnotation(key, values) {
-      const now = new Date().toISOString();
-      await annotations.updateOne(key, { $set: { ...values, updated_at: values.updated_at || now }, $setOnInsert: { created_at: now } }, { upsert: true });
-      return annotations.findOne(key, { projection: { _id: 0 } });
+    listAnnotations: async (query) => (await annotations.find(query).toArray()).map(toAnnotation),
+    findAnnotation: async (id) => { const _id = objectId(id); return _id ? toAnnotation(await annotations.findOne({ _id })) : null; },
+    async insertAnnotation(annotation) { const { insertedId } = await annotations.insertOne({ ...annotation }); return toAnnotation({ ...annotation, _id: insertedId }); },
+    async updateAnnotation(id, patch) {
+      const _id = objectId(id);
+      if (!_id) return null;
+      await annotations.updateOne({ _id }, { $set: patch });
+      return toAnnotation(await annotations.findOne({ _id }));
     },
-    deleteAnnotation: (key) => annotations.deleteOne(key),
+    deleteAnnotation: async (id) => { const _id = objectId(id); if (_id) await annotations.deleteOne({ _id }); },
+    countAnnotationsByUser: async () => Object.fromEntries((await annotations.aggregate([{ $group: { _id: '$user_id', n: { $sum: 1 } } }]).toArray()).map((row) => [row._id, row.n])),
   };
 }
 
@@ -129,6 +141,7 @@ function createMemoryStore() {
     findUserByUsername: async (username) => users.find((user) => user.username === username) || null,
     findUserById: async (id) => users.find((user) => user.id === String(id)) || null,
     listUsers: async () => [...users].sort((left, right) => left.username.localeCompare(right.username)),
+    listUsersSharingWith: async (viewerId) => users.filter((user) => (user.shared_with || []).includes(String(viewerId))),
     async insertUser(user) {
       if (users.some((item) => item.username === user.username)) throw Object.assign(new Error('duplicate'), { code: 11000 });
       const stored = { ...user, id: crypto.randomUUID() };
@@ -137,15 +150,16 @@ function createMemoryStore() {
     },
     async updateUser(id, patch) { const user = users.find((item) => item.id === String(id)); if (!user) return null; Object.assign(user, patch); return user; },
     listAnnotations: async (query) => annotations.filter((item) => matches(item, query)).map((item) => ({ ...item })),
-    countAnnotationsByUser: async () => annotations.reduce((counts, item) => ({ ...counts, [item.user_id]: (counts[item.user_id] || 0) + 1 }), {}),
-    async upsertAnnotation(key, values) {
-      const now = new Date().toISOString();
-      let item = annotations.find((annotation) => matches(annotation, key));
-      if (!item) { item = { ...key, created_at: now }; annotations.push(item); }
-      Object.assign(item, values, { updated_at: values.updated_at || now });
+    findAnnotation: async (id) => { const item = annotations.find((annotation) => annotation.id === String(id)); return item ? { ...item } : null; },
+    async insertAnnotation(annotation) { const stored = { ...annotation, id: crypto.randomUUID() }; annotations.push(stored); return { ...stored }; },
+    async updateAnnotation(id, patch) {
+      const item = annotations.find((annotation) => annotation.id === String(id));
+      if (!item) return null;
+      Object.assign(item, patch);
       return { ...item };
     },
-    async deleteAnnotation(key) { const index = annotations.findIndex((item) => matches(item, key)); if (index >= 0) annotations.splice(index, 1); },
+    async deleteAnnotation(id) { const index = annotations.findIndex((item) => item.id === String(id)); if (index >= 0) annotations.splice(index, 1); },
+    countAnnotationsByUser: async () => annotations.reduce((counts, item) => ({ ...counts, [item.user_id]: (counts[item.user_id] || 0) + 1 }), {}),
   };
 }
 

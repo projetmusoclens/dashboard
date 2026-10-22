@@ -8,6 +8,9 @@ export interface Annotation {
   keywords: string;
   note: string;
   updatedAt: string;
+  // Personnes avec qui cette annotation précise est partagée, et si le commentaire libre l'est aussi.
+  sharedWith?: string[];
+  shareNotes?: boolean;
 }
 
 const STORAGE_KEY = 'heimdall-explorer-annotations:v1';
@@ -41,3 +44,11 @@ export function saveAnnotations(annotations: Record<string, Annotation>): boolea
     return false;
   }
 }
+
+export const TONE_LABELS: Record<string, string> = {
+  positive: 'Positive', negative: 'Négative', neutre: 'Neutre', mixte: 'Mixte', ironique: 'Ironique / humoristique', incertaine: 'Incertaine',
+};
+
+export const INTERACTION_LABELS: Record<string, string> = {
+  publication: 'Publication initiale', reponse: 'Réponse', citation: 'Citation', relais: 'Relais / republication', autre: 'Autre',
+};

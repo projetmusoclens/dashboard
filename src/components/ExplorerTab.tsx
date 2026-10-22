@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FileUp, GitBranch, Info, PencilLine, Search, X, ZoomIn } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, GitBranch, Info, PencilLine, Search, Share2, Users, X, ZoomIn } from 'lucide-react';
 import api from '../services/api';
-import { Post, PostKind, PostSort, QueryParams, StoredAnnotation } from '../types';
+import { AnnotationShares, Post, PostAnnotations, PostKind, PostSort, QueryParams, SharedPostRef, StoredAnnotation, UserProfile } from '../types';
 import { fmtNum } from '../utils/format';
 import { langLabel } from '../utils/languages';
 import { downloadFile, toCsv } from '../utils/download';
-import { bskyPostUrl, mediaKind, parseImportedFile, PostRecord, safeUrl, toRecord } from '../utils/postRecord';
+import { bskyPostUrl, mediaKind, PostRecord, safeUrl, toRecord } from '../utils/postRecord';
 import {
-  Annotation, annotationKey, defaultAnnotation, loadAnnotations, RELEVANCE_LABELS, STATUS_LABELS,
+  Annotation, annotationKey, defaultAnnotation, INTERACTION_LABELS, loadAnnotations, RELEVANCE_LABELS, STATUS_LABELS, TONE_LABELS,
 } from '../utils/annotations';
 import { useAuth } from './AuthGate';
 import { platformLabel } from './OverviewTab';
@@ -65,21 +65,6 @@ function copyText(text: string) {
   return Promise.resolve();
 }
 
-function localQuery(posts: Post[], q: string, kind: '' | PostKind, sort: PostSort): Post[] {
-  const needle = q.trim().toLowerCase();
-  const sortValue = (post: Post) => sort === 'date' ? new Date(post.timestamp || 0).getTime() || 0 : Number(post.engagement?.[sort]) || 0;
-  return posts
-    .filter((post) => !needle || [post.text, post.author_handle, ...(post.matched_keywords || [])].join(' ').toLowerCase().includes(needle))
-    .filter((post) => {
-      if (!kind) return true;
-      if (kind === 'reply') return post.is_reply;
-      if (kind === 'retweet') return Boolean(post.is_retweet);
-      if (kind === 'quote') return Boolean(post.is_quote);
-      return !post.is_reply && !post.is_retweet && !post.is_quote;
-    })
-    .sort((left, right) => sortValue(right) - sortValue(left));
-}
-
 const DetailSection: React.FC<{ title: string; rows: [string, React.ReactNode][] }> = ({ title, rows }) => (
   <div className="explorer-detail-section">
     <h3>{title}</h3>
@@ -99,19 +84,53 @@ const fromServer = (item: StoredAnnotation): Annotation => ({
   interaction: item.interaction, keywords: item.keywords, note: item.note, updatedAt: item.updated_at,
 });
 
-const ANNOTATION_HEADERS = ['statut', 'pertinence', 'theme', 'tonalite', 'interaction', 'mots_cles', 'commentaire', 'annotation_modifiee_le'];
-const annotationCells = (annotation: Annotation) => [annotation.status, annotation.relevance, annotation.theme, annotation.tone, annotation.interaction, annotation.keywords, annotation.note, annotation.updatedAt];
+const FIELD_KEYS = ['status', 'relevance', 'theme', 'tone', 'interaction', 'keywords', 'note'] as const;
+const fieldsOf = (annotation: Annotation) => Object.fromEntries(FIELD_KEYS.map((key) => [key, annotation[key]])) as Pick<StoredAnnotation, typeof FIELD_KEYS[number]>;
+// Un formulaire resté à ses valeurs par défaut n'est pas un brouillon.
+const isEmptyDraft = (annotation: Annotation) => FIELD_KEYS.every((key) => annotation[key] === defaultAnnotation()[key]);
+
+// Annotation en lecture seule (carte) : la mienne dans la liste du post, ou celle d'une autre personne.
+const AnnotationSummary: React.FC<{ item: StoredAnnotation; title: React.ReactNode; action?: React.ReactNode; highlighted?: boolean }> = ({ item, title, action, highlighted }) => {
+  const details = [
+    item.theme && `Thème : ${item.theme}`,
+    item.tone && `Tonalité : ${TONE_LABELS[item.tone] || item.tone}`,
+    item.interaction && `Interaction : ${INTERACTION_LABELS[item.interaction] || item.interaction}`,
+    item.keywords && `Mots-clés : ${item.keywords}`,
+  ].filter(Boolean);
+  return (
+    <div className={`explorer-annotation-card ${highlighted ? 'editing' : ''}`}>
+      <div className="explorer-annotation-card-head">
+        <span className="explorer-annotation-card-title">{title}</span>
+        <span className="explorer-annotation-card-date" title={item.updated_at && item.updated_at !== item.created_at ? `Modifiée le ${formatDate(item.updated_at)}` : undefined}>
+          {formatDate(item.created_at || item.updated_at || null)}{item.updated_at && item.created_at && item.updated_at !== item.created_at ? ' · modifiée' : ''}
+        </span>
+      </div>
+      <div className="explorer-item-footer">
+        <span className={`explorer-pill ${item.status === 'analyse' ? 'saved' : item.status === 'a_discuter' ? 'discuss' : ''}`}>{STATUS_LABELS[item.status] || item.status}</span>
+        {item.relevance && <span className={`explorer-pill ${item.relevance === 'non' ? 'no' : item.relevance === 'incertain' ? 'discuss' : 'saved'}`}>{RELEVANCE_LABELS[item.relevance]}</span>}
+      </div>
+      {details.length > 0 && <div className="explorer-annotation-card-details">{details.join(' · ')}</div>}
+      {item.note && <div className="explorer-annotation-card-note">{item.note}</div>}
+      {item.note_hidden && <div className="explorer-annotation-card-hidden">Commentaire libre non partagé</div>}
+      {action}
+    </div>
+  );
+};
+
+// « a, b et c »
+const frenchList = (items: string[]) => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} et ${items[items.length - 1]}`);
+
+const ANNOTATION_HEADERS = ['annotation_id', 'statut', 'pertinence', 'theme', 'tonalite', 'interaction', 'mots_cles', 'commentaire', 'annotation_creee_le', 'annotation_modifiee_le'];
+const annotationCells = (item: StoredAnnotation) => [item.id, item.status, item.relevance, item.theme, item.tone, item.interaction, item.keywords, item.note, item.created_at, item.updated_at];
 
 const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOpenThread }) => {
   const { user } = useAuth();
   const legacyFlag = `heimdall-explorer-annotations:imported:${user.id}`;
-  const [fileSource, setFileSource] = useState<{ name: string; posts: Post[] } | null>(null);
   const availablePlatforms = useMemo<Platform[]>(() => {
-    if (fileSource) return PLATFORMS.filter((platform) => fileSource.posts.some((post) => post.platform === platform));
     if (filters.platform) return PLATFORMS.filter((platform) => platform === filters.platform);
     const present = PLATFORMS.filter((platform) => (platformCounts[platform] || 0) > 0);
     return present.length ? present : PLATFORMS;
-  }, [fileSource, filters.platform, platformCounts]);
+  }, [filters.platform, platformCounts]);
 
   const [activePlatform, setActivePlatform] = useState<Platform>(availablePlatforms[0] || 'twitter');
   const [searchInput, setSearchInput] = useState('');
@@ -123,32 +142,38 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
   const [langFilter, setLangFilter] = useState('');
   const [mediaFilter, setMediaFilter] = useState('');
 
+  // « Tous les posts » (recherche dans la base) ou « Partagés avec moi » (posts annotés par d'autres pour moi).
+  const [viewMode, setViewMode] = useState<'all' | 'shared'>('all');
+  const [sharedRefs, setSharedRefs] = useState<SharedPostRef[] | null>(null);
   const [dbPosts, setDbPosts] = useState<Post[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Annotations de l'utilisateur connecté, enregistrées sur le serveur.
-  const [annotations, setAnnotations] = useState<Record<string, Annotation>>({});
-  const [annotationsReady, setAnnotationsReady] = useState(false);
+  // Mes annotations, par post (plusieurs par post possibles, de la plus récente à la plus ancienne).
+  const [annotations, setAnnotations] = useState<Record<string, StoredAnnotation[]>>({});
   const [legacyCount, setLegacyCount] = useState(0);
   const [currentId, setCurrentId] = useState<string | null>(null);
+  // Formulaire : nouvelle annotation, ou modification de l'annotation editingId.
   const [form, setForm] = useState<Annotation>(defaultAnnotation());
-  const [saveState, setSaveState] = useState('—');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [zoomUrl, setZoomUrl] = useState<string | null>(null);
   const [annotationOpen, setAnnotationOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [toast, setToast] = useState('');
 
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const formTopRef = useRef<HTMLDivElement | null>(null);
   const draftKeyRef = useRef<string | null>(null);
-  const dirtyRef = useRef(false);
-  const autosaveRef = useRef<number | undefined>(undefined);
+  // Brouillons non enregistrés, par post : changer de post ne perd pas la saisie.
+  const draftsRef = useRef(new Map<string, Annotation>());
   const toastRef = useRef<number | undefined>(undefined);
   const formRef = useRef(form);
   formRef.current = form;
+  const editingRef = useRef(editingId);
+  editingRef.current = editingId;
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -158,8 +183,10 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
 
   const reloadAnnotations = useCallback(() => api.getAnnotations('mine')
     .then(({ annotations: items }) => {
-      setAnnotations(Object.fromEntries(items.map((item) => [annotationKey(item.platform, item.post_id), fromServer(item)])));
-      setAnnotationsReady(true);
+      const byPost: Record<string, StoredAnnotation[]> = {};
+      items.forEach((item) => { (byPost[annotationKey(item.platform, item.post_id)] ||= []).push(item); });
+      Object.values(byPost).forEach((list) => list.sort((left, right) => String(right.created_at || right.updated_at || '').localeCompare(String(left.created_at || left.updated_at || ''))));
+      setAnnotations(byPost);
     })
     .catch((error) => showToast(`Annotations indisponibles : ${error.message}`)), [showToast]);
 
@@ -211,20 +238,28 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
   }), [filtersKey, activePlatform, query, kind, sort]);
 
   useEffect(() => {
-    if (fileSource) return undefined;
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
-    api.getPosts({ ...serverParams, limit: PAGE_SIZE, skip: 0 })
+    // Vue « Partagés avec moi » : les posts sont chargés par identifiant, sans les filtres de recherche.
+    const load = viewMode === 'shared'
+      ? api.getSharedWithMe().then(({ posts: refs }) => {
+        if (cancelled) return [];
+        setSharedRefs(refs);
+        const ids = refs.filter((ref) => ref.platform === activePlatform).map((ref) => ref.post_id);
+        return ids.length ? api.getPosts({ ids: ids.slice(0, 500).join(','), platform: activePlatform, sort: 'date', limit: 500 }) : [];
+      })
+      : api.getPosts({ ...serverParams, limit: PAGE_SIZE, skip: 0 });
+    load
       .then((posts) => {
         if (cancelled) return;
         setDbPosts(posts);
-        setHasMore(posts.length === PAGE_SIZE);
+        setHasMore(viewMode === 'all' && posts.length === PAGE_SIZE);
       })
       .catch((error) => { if (!cancelled) setLoadError(error.message || String(error)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [serverParams, fileSource]);
+  }, [serverParams, viewMode, activePlatform]);
 
   const loadMore = () => {
     setLoading(true);
@@ -240,13 +275,12 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
       .finally(() => setLoading(false));
   };
 
-  const sourcePosts = useMemo(() => {
-    if (!fileSource) return dbPosts;
-    return localQuery(fileSource.posts.filter((post) => post.platform === activePlatform), query, kind, sort);
-  }, [fileSource, dbPosts, activePlatform, query, kind, sort]);
-
-  const records = useMemo(() => sourcePosts.map(toRecord), [sourcePosts]);
-  const annotationFor = useCallback((record: PostRecord): Annotation => ({ ...defaultAnnotation(), ...(annotations[annotationKey(record.platform, record.id)] || {}) }), [annotations]);
+  const records = useMemo(() => dbPosts.map(toRecord), [dbPosts]);
+  // Statut d'un post dans la liste et les filtres : celui de ma plus récente annotation.
+  const annotationFor = useCallback((record: PostRecord): Annotation => {
+    const latest = annotations[annotationKey(record.platform, record.id)]?.[0];
+    return latest ? fromServer(latest) : defaultAnnotation();
+  }, [annotations]);
 
   const languages = useMemo(() => {
     const counts = new Map<string, number>();
@@ -271,70 +305,151 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
     if (!filtered.some((record) => record.id === currentId)) setCurrentId(filtered[0].id);
   }, [filtered, currentId]);
 
-  const commitDraft = useCallback((silent = true) => {
-    window.clearTimeout(autosaveRef.current);
-    const key = draftKeyRef.current;
-    if (!key || !dirtyRef.current) return;
-    dirtyRef.current = false;
-    const draft = formRef.current;
-    const [platform, ...rest] = key.split(':');
-    const postId = rest.join(':');
-    setAnnotations((all) => ({ ...all, [key]: { ...draft, updatedAt: new Date().toISOString() } }));
-    setSaveState('Enregistrement…');
-    api.saveAnnotation({ ...draft, platform, post_id: postId })
-      .then(({ annotation }) => {
-        setAnnotations((all) => ({ ...all, [key]: fromServer(annotation) }));
-        if (draftKeyRef.current === key && !dirtyRef.current) setSaveState('Enregistré');
-        if (!silent) showToast('Annotation enregistrée');
-      })
-      .catch((error) => {
-        // Le brouillon reste « modifié » pour être renvoyé au prochain enregistrement.
-        if (draftKeyRef.current === key) { dirtyRef.current = true; setSaveState('Non enregistré (erreur)'); }
-        showToast(`Annotation non enregistrée : ${error.message || error}`);
-      });
-  }, [showToast]);
+  // Pour le post courant : annotations des autres qui me sont visibles.
+  const [postAnnotations, setPostAnnotations] = useState<PostAnnotations | null>(null);
+  const [mineOpen, setMineOpen] = useState(true);
+  const [sharedOpen, setSharedOpen] = useState(true);
+  // Partage : personnes avec qui je partage, et qui partagent avec moi.
+  const [shares, setShares] = useState<AnnotationShares | null>(null);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [directory, setDirectory] = useState<UserProfile[]>([]);
+  const [shareDraft, setShareDraft] = useState<Set<string>>(() => new Set());
+  const [shareSaving, setShareSaving] = useState(false);
+  const [shareNotesDraft, setShareNotesDraft] = useState(true);
 
-  const annotationsRef = useRef(annotations);
-  annotationsRef.current = annotations;
+  // Partage d'une de mes annotations (celle dont l'identifiant est postShareOpen) avec des personnes choisies.
+  const [postShareOpen, setPostShareOpen] = useState<string | null>(null);
+  const [postShareDraft, setPostShareDraft] = useState<Set<string>>(() => new Set());
+  const [postShareSaving, setPostShareSaving] = useState(false);
+  const [postShareNotesDraft, setPostShareNotesDraft] = useState(true);
 
-  // Charge le brouillon du post courant, après avoir enregistré celui du post précédent.
   useEffect(() => {
-    commitDraft();
-    if (!current) { draftKeyRef.current = null; return; }
-    const key = annotationKey(current.platform, current.id);
-    draftKeyRef.current = key;
-    const stored = annotationsRef.current[key];
-    setForm({ ...defaultAnnotation(), ...(stored || {}) });
-    setSaveState(stored?.updatedAt ? `Modifié ${new Intl.DateTimeFormat('fr-FR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(stored.updatedAt))}` : 'Non enregistré');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.platform, current?.id, annotationsReady]);
+    api.getDirectory().then((result) => setDirectory(result.users)).catch(() => setDirectory([]));
+  }, []);
+  useEffect(() => {
+    api.getSharedWithMe().then(({ posts }) => setSharedRefs(posts)).catch(() => setSharedRefs(null));
+  }, []);
+  const sharedOwners = useMemo(() => new Map((sharedRefs || []).map((ref) => [annotationKey(ref.platform, ref.post_id), ref.owners.join(', ')])), [sharedRefs]);
+  const nameOf = (id: string) => directory.find((item) => item.id === id)?.name || 'compte inconnu';
 
-  useEffect(() => () => commitDraft(), [commitDraft]);
+  const refreshPostAnnotations = useCallback((platform: string, postId: string) => {
+    api.getPostAnnotations(platform, postId)
+      .then((result) => { if (draftKeyRef.current === annotationKey(platform, postId)) setPostAnnotations(result); })
+      .catch(() => { if (draftKeyRef.current === annotationKey(platform, postId)) setPostAnnotations(null); });
+  }, []);
 
-  const updateForm = (patch: Partial<Annotation>) => {
-    setForm((value) => ({ ...value, ...patch }));
-    dirtyRef.current = true;
-    setSaveState('Modification…');
-    window.clearTimeout(autosaveRef.current);
-    autosaveRef.current = window.setTimeout(() => commitDraft(), 700);
+  useEffect(() => {
+    api.getShares().then(setShares).catch(() => setShares(null));
+  }, []);
+
+  const openShareDialog = () => {
+    setShareDraft(new Set((shares?.shared_with || []).map((item) => item.id)));
+    setShareNotesDraft(shares?.include_notes !== false);
+    setShareDialogOpen(true);
   };
 
-  const clearAnnotation = () => {
-    if (!current || !window.confirm('Effacer l’annotation de cette publication ?')) return;
+  const saveShares = async () => {
+    setShareSaving(true);
+    try {
+      await api.setShares(Array.from(shareDraft), shareNotesDraft);
+      setShares(await api.getShares());
+      setShareDialogOpen(false);
+      showToast(shareDraft.size ? `Annotations partagées avec ${shareDraft.size} personne(s)${shareNotesDraft ? '' : ', sans les commentaires libres'}` : 'Partage désactivé');
+    } catch (error: any) {
+      showToast(`Partage impossible : ${error.message || error}`);
+    } finally {
+      setShareSaving(false);
+    }
+  };
+
+  const storeMine = (key: string, update: (list: StoredAnnotation[]) => StoredAnnotation[]) =>
+    setAnnotations((all) => ({ ...all, [key]: update(all[key] || []) }));
+
+  // Changement de post : le brouillon en cours est mis de côté, celui du nouveau post est repris.
+  useEffect(() => {
+    const previous = draftKeyRef.current;
+    if (previous && !editingRef.current && !isEmptyDraft(formRef.current)) draftsRef.current.set(previous, formRef.current);
+    else if (previous && !editingRef.current) draftsRef.current.delete(previous);
+    setEditingId(null);
+    setPostAnnotations(null);
+    setPostShareOpen(null);
+    if (!current) { draftKeyRef.current = null; setForm(defaultAnnotation()); return undefined; }
     const key = annotationKey(current.platform, current.id);
-    dirtyRef.current = false;
-    window.clearTimeout(autosaveRef.current);
-    api.deleteAnnotation(current.platform, current.id)
+    draftKeyRef.current = key;
+    setForm(draftsRef.current.get(key) || defaultAnnotation());
+    const timer = window.setTimeout(() => refreshPostAnnotations(current.platform, current.id), 250);
+    return () => window.clearTimeout(timer);
+  }, [current?.platform, current?.id, refreshPostAnnotations]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const updateForm = (patch: Partial<Annotation>) => setForm((value) => ({ ...value, ...patch }));
+
+  const resetForm = () => {
+    setForm(defaultAnnotation());
+    setEditingId(null);
+    if (draftKeyRef.current) draftsRef.current.delete(draftKeyRef.current);
+  };
+
+  // « Ajouter l'annotation » (ou enregistrer la modification) : l'annotation rejoint la liste, le formulaire est vidé.
+  const submitAnnotation = async () => {
+    if (!current || saving) return;
+    const { platform, id } = current;
+    const key = annotationKey(platform, id);
+    if (!editingId && isEmptyDraft(form)) { showToast('Remplissez au moins un champ avant d’ajouter l’annotation'); return; }
+    setSaving(true);
+    try {
+      if (editingId) {
+        const { annotation } = await api.updateAnnotation(editingId, fieldsOf(form));
+        storeMine(key, (list) => list.map((item) => (item.id === annotation.id ? annotation : item)));
+        showToast('Annotation modifiée');
+      } else {
+        const { annotation } = await api.createAnnotation(platform, id, fieldsOf(form));
+        storeMine(key, (list) => [annotation, ...list]);
+        showToast('Annotation ajoutée');
+      }
+      resetForm();
+    } catch (error: any) {
+      showToast(`Annotation non enregistrée : ${error.message || error}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const startEdit = (item: StoredAnnotation) => {
+    setEditingId(item.id);
+    setForm(fromServer(item));
+    formTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const removeAnnotation = (item: StoredAnnotation) => {
+    if (!window.confirm('Supprimer cette annotation ?')) return;
+    const key = annotationKey(item.platform, item.post_id);
+    api.deleteAnnotation(item.id)
       .then(() => {
-        setAnnotations((all) => {
-          const { [key]: _removed, ...rest } = all;
-          return rest;
-        });
-        setForm(defaultAnnotation());
-        setSaveState('Non enregistré');
-        showToast('Annotation effacée');
+        storeMine(key, (list) => list.filter((entry) => entry.id !== item.id));
+        if (editingId === item.id) resetForm();
+        showToast('Annotation supprimée');
       })
-      .catch((error) => showToast(`Effacement impossible : ${error.message || error}`));
+      .catch((error) => showToast(`Suppression impossible : ${error.message || error}`));
+  };
+
+  const openPostShare = (item: StoredAnnotation) => {
+    setPostShareDraft(new Set(item.shared_with || []));
+    setPostShareNotesDraft(item.share_notes !== false);
+    setPostShareOpen(item.id);
+  };
+
+  const savePostShare = async (item: StoredAnnotation) => {
+    setPostShareSaving(true);
+    try {
+      const { annotation } = await api.shareAnnotation(item.id, Array.from(postShareDraft), postShareNotesDraft);
+      storeMine(annotationKey(item.platform, item.post_id), (list) => list.map((entry) => (entry.id === annotation.id ? annotation : entry)));
+      setPostShareOpen(null);
+      showToast(postShareDraft.size ? `Annotation partagée avec ${postShareDraft.size} personne(s)${postShareNotesDraft ? '' : ', sans le commentaire libre'}` : 'Partage de cette annotation retiré');
+    } catch (error: any) {
+      showToast(error.message || String(error));
+    } finally {
+      setPostShareSaving(false);
+    }
   };
 
   const move = useCallback((delta: number) => {
@@ -360,40 +475,23 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
   }, [currentId]);
 
   const selectPlatform = (platform: Platform) => {
-    commitDraft();
     setActivePlatform(platform);
     setSort(defaultSortFor(platform));
     setLangFilter('');
   };
 
-  const onFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-    try {
-      const { posts, errors } = parseImportedFile(await file.text());
-      commitDraft();
-      setFileSource({ name: file.name, posts });
-      const firstPlatform = (posts[0]?.platform === 'bluesky' ? 'bluesky' : 'twitter') as Platform;
-      setActivePlatform(firstPlatform);
-      setSort(defaultSortFor(firstPlatform));
-      showToast(`${file.name} : ${posts.length} publication(s)${errors ? ` · ${errors} ligne(s) ignorée(s)` : ''}`);
-    } catch (error: any) {
-      window.alert(`Impossible de lire le fichier : ${error.message || error}`);
-    }
-  };
-
   const exportRecords = (format: 'csv' | 'json') => {
-    commitDraft();
     setExportOpen(false);
-    const withAnnotation = filtered.map((record) => ({ record, annotation: annotationFor(record) }));
+    const withAnnotations = filtered.map((record) => ({ record, items: annotations[annotationKey(record.platform, record.id)] || [] }));
     const stamp = new Date().toISOString().slice(0, 10);
     if (format === 'json') {
-      const enriched = withAnnotation.map(({ record, annotation }) => ({ ...record.post, raw_json: record.raw, annotation }));
+      const enriched = withAnnotations.map(({ record, items }) => ({ ...record.post, raw_json: record.raw, annotations: items }));
       downloadFile(JSON.stringify(enriched, null, 2), `corpus_${activePlatform}_annote_${stamp}.json`, 'application/json;charset=utf-8');
     } else {
+      // Une ligne par annotation des posts de la liste.
       const headers = ['annotateur', 'plateforme', 'publication_id', 'url', 'collecte', 'date_publication', 'date_collecte', 'auteur', 'compte', 'texte', ...ANNOTATION_HEADERS];
-      const rows = withAnnotation.map(({ record, annotation }) => [user.username, record.platform, record.id, record.url, record.collection, record.createdAt, record.collectedAt, record.author.name, record.author.handle, record.text, ...annotationCells(annotation)]);
+      const rows = withAnnotations.flatMap(({ record, items }) => items.map((item) => [user.username, record.platform, record.id, record.url, record.collection, record.createdAt, record.collectedAt, record.author.name, record.author.handle, record.text, ...annotationCells(item)]));
+      if (!rows.length) { showToast('Aucune annotation dans cette liste'); return; }
       downloadFile(toCsv(headers, rows), `annotations_${activePlatform}_${stamp}.csv`, 'text/csv;charset=utf-8');
     }
     showToast('Export créé');
@@ -401,13 +499,12 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
 
   // Export de toutes les annotations enregistrées (les siennes, ou celles de l'équipe pour l'admin), avec le texte des posts.
   const exportAllAnnotations = async (scope: 'mine' | 'all') => {
-    commitDraft();
     setExportOpen(false);
     try {
       const { annotations: items } = await api.exportAnnotations(scope);
       if (!items.length) { showToast('Aucune annotation enregistrée'); return; }
       const headers = ['annotateur', 'plateforme', 'publication_id', 'auteur', 'collecte', 'date_publication', 'langue', 'texte', ...ANNOTATION_HEADERS];
-      const rows = items.map((item) => [item.username, item.platform, item.post_id, item.post?.author_handle, item.post?.collection_name, item.post?.timestamp, item.post?.lang, item.post?.text, ...annotationCells(fromServer(item))]);
+      const rows = items.map((item) => [item.username, item.platform, item.post_id, item.post?.author_handle, item.post?.collection_name, item.post?.timestamp, item.post?.lang, item.post?.text, ...annotationCells(item)]);
       downloadFile(toCsv(headers, rows), `annotations_${scope === 'all' ? 'equipe' : user.username}_${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv;charset=utf-8');
       showToast(`${rows.length} annotation(s) exportée(s)`);
     } catch (error: any) {
@@ -418,9 +515,7 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
   const annotationValues = records.map(annotationFor);
   const done = annotationValues.filter((annotation) => annotation.status === 'analyse').length;
   const toDiscuss = annotationValues.filter((annotation) => annotation.status === 'a_discuter').length;
-  const tabCount = (platform: Platform) => fileSource
-    ? fileSource.posts.filter((post) => post.platform === platform).length
-    : platformCounts[platform] || 0;
+  const tabCount = (platform: Platform) => platformCounts[platform] || 0;
 
   const renderReader = () => {
     if (!current) {
@@ -445,8 +540,8 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
           <div className="explorer-card-actions">
             <button type="button" className="explorer-btn" onClick={() => copyText(current.text).then(() => showToast('Texte copié'))}><Copy size={13} /> Copier le texte</button>
             <button type="button" className="explorer-btn" onClick={() => setDetailsOpen(true)}><Info size={13} /> Voir les détails</button>
-            {!fileSource && (current.isReply || current.post.reply_to_id || (current.metrics.reply || 0) > 0) && (
-              <button type="button" className="explorer-btn" onClick={() => { commitDraft(); onOpenThread(current.post); }}><GitBranch size={13} /> Voir le thread</button>
+            {(current.isReply || current.post.reply_to_id || (current.metrics.reply || 0) > 0) && (
+              <button type="button" className="explorer-btn" onClick={() => onOpenThread(current.post)}><GitBranch size={13} /> Voir le thread</button>
             )}
             {current.url && <a className="explorer-btn primary" href={current.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={13} /> {current.platform === 'bluesky' ? 'Voir sur Bluesky' : 'Voir sur X'}</a>}
           </div>
@@ -536,11 +631,9 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
         </div>
         <div className="explorer-actions">
           <button type="button" className="explorer-btn explorer-mobile-annotate" onClick={() => setAnnotationOpen((open) => !open)}><PencilLine size={13} /> Annoter</button>
-          {fileSource
-            ? <button type="button" className="explorer-btn" onClick={() => { commitDraft(); setFileSource(null); }}>Revenir à la base · {fileSource.name} <X size={13} /></button>
-            : null}
-          <button type="button" className="explorer-btn" onClick={() => fileInputRef.current?.click()}><FileUp size={13} /> Ouvrir un JSONL</button>
-          <input ref={fileInputRef} type="file" accept=".jsonl,.json,.txt" hidden onChange={onFileSelected} />
+          <button type="button" className="explorer-btn" onClick={openShareDialog} title="Partager toutes vos annotations avec une ou plusieurs personnes">
+            <Share2 size={13} /> Tout partager{shares?.shared_with.length ? ` (${shares.shared_with.length})` : ''}
+          </button>
           <div className="explorer-export">
             <button type="button" className="explorer-btn primary" aria-expanded={exportOpen} onClick={() => setExportOpen((open) => !open)}><Download size={13} /> Exporter ▾</button>
             {exportOpen && (
@@ -558,18 +651,30 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
       <div className="explorer-workspace">
         <aside className="explorer-pane explorer-left">
           <div className="explorer-filters">
-            <div className="explorer-search">
-              <Search size={14} />
-              <input type="search" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder={fileSource ? 'Rechercher dans le fichier…' : 'Rechercher dans la base (texte, auteur, mot-clé)…'} />
+            <div className="explorer-view-toggle" role="tablist" aria-label="Posts affichés">
+              <button type="button" role="tab" aria-selected={viewMode === 'all'} className={viewMode === 'all' ? 'active' : ''} onClick={() => setViewMode('all')}>Tous les posts</button>
+              <button type="button" role="tab" aria-selected={viewMode === 'shared'} className={viewMode === 'shared' ? 'active' : ''} onClick={() => setViewMode('shared')}>
+                Partagés avec moi{sharedRefs ? ` (${sharedRefs.length})` : ''}
+              </button>
             </div>
+            {viewMode === 'shared' ? (
+              <div className="explorer-section-empty">Posts dont une annotation vous est partagée (tweet par tweet ou par un partage complet), du plus récent au plus ancien. Les filtres de collecte et la recherche ne s’appliquent pas à cette vue.</div>
+            ) : (
+              <div className="explorer-search">
+                <Search size={14} />
+                <input type="search" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="Rechercher dans la base (texte, auteur, mot-clé)…" />
+              </div>
+            )}
+            {viewMode === 'all' && (
             <div className="explorer-filter-row">
-              <select aria-label="Tri" value={sort} onChange={(event) => setSort(event.target.value as PostSort)}>
-                {SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>Tri : {option.label}</option>)}
-              </select>
-              <select aria-label="Type de publication" value={kind} onChange={(event) => setKind(event.target.value as '' | PostKind)}>
-                {KIND_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
-            </div>
+                <select aria-label="Tri" value={sort} onChange={(event) => setSort(event.target.value as PostSort)}>
+                  {SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>Tri : {option.label}</option>)}
+                </select>
+                <select aria-label="Type de publication" value={kind} onChange={(event) => setKind(event.target.value as '' | PostKind)}>
+                  {KIND_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </div>
+            )}
             <div className="explorer-filter-row">
               <select aria-label="Statut d’annotation" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
                 <option value="">Tous les statuts</option>
@@ -618,6 +723,11 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
                     {record.isQuote && <span className="explorer-pill">cité</span>}
                     {record.isReply && <span className="explorer-pill">réponse</span>}
                     {record.isRetweet && <span className="explorer-pill">repost</span>}
+                    {(annotations[annotationKey(record.platform, record.id)] || []).length > 1 && <span className="explorer-pill">{annotations[annotationKey(record.platform, record.id)].length} annotations</span>}
+                    {(annotations[annotationKey(record.platform, record.id)] || []).some((item) => item.shared_with?.length) && <span className="explorer-pill bsky">partagée</span>}
+                    {viewMode === 'shared' && sharedOwners.get(annotationKey(record.platform, record.id)) && (
+                      <span className="explorer-pill saved">de : {sharedOwners.get(annotationKey(record.platform, record.id))}</span>
+                    )}
                     {record.metrics.like !== null && <span className="explorer-pill">♥ {fmtNum(record.metrics.like)}</span>}
                     <span className={`explorer-pill ${statusClass}`}>{STATUS_LABELS[annotation.status]}</span>
                     {annotation.relevance && <span className={`explorer-pill ${annotation.relevance === 'non' ? 'no' : annotation.relevance === 'incertain' ? 'discuss' : 'saved'}`}>{RELEVANCE_LABELS[annotation.relevance]}</span>}
@@ -626,7 +736,7 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
                 </button>
               );
             })}
-            {!fileSource && hasMore && (
+            {hasMore && (
               <button type="button" className="explorer-btn explorer-load-more" disabled={loading} onClick={loadMore}>
                 {loading ? 'Chargement…' : `Charger ${PAGE_SIZE} publications de plus`}
               </button>
@@ -649,15 +759,15 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
         <aside className={`explorer-pane explorer-annotation ${annotationOpen ? 'open' : ''}`}>
           <div className="explorer-annotation-head">
             <div>
-              <h2>Annotation rapide</h2>
-              <div className="explorer-annotation-sub">Enregistrée sur le serveur sous votre compte ({user.username}).</div>
+              <h2>{editingId ? 'Modifier mon annotation' : 'Nouvelle annotation'}</h2>
+              <div className="explorer-annotation-sub">Enregistrée sur le serveur sous votre compte ({user.username}). Un post peut recevoir plusieurs annotations.</div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className="explorer-save-state">{saveState}</span>
               <button type="button" className="explorer-icon-btn explorer-annotation-close" aria-label="Fermer l’annotation" onClick={() => setAnnotationOpen(false)}><X size={16} /></button>
             </div>
           </div>
-          <form className="explorer-form" onSubmit={(event) => { event.preventDefault(); dirtyRef.current = true; commitDraft(false); }}>
+          <div ref={formTopRef} />
+          <form className={`explorer-form ${editingId ? 'editing' : ''}`} onSubmit={(event) => { event.preventDefault(); submitAnnotation(); }}>
             <fieldset disabled={!current} style={{ border: 0, display: 'grid', gap: 11 }}>
               <div className="explorer-form-row">
                 <label className="explorer-field">Statut
@@ -708,21 +818,159 @@ const ExplorerTab: React.FC<ExplorerTabProps> = ({ filters, platformCounts, onOp
                 <textarea value={form.note} onChange={(event) => updateForm({ note: event.target.value })} placeholder="Observation, interprétation ou point à discuter…" />
               </label>
               <div className="explorer-save-row">
-                <button type="submit" className="explorer-btn primary">Enregistrer</button>
-                <button type="button" className="explorer-btn danger" onClick={clearAnnotation}>Effacer</button>
+                <button type="submit" className="explorer-btn primary" disabled={saving}>
+                  {saving ? 'Enregistrement…' : editingId ? 'Enregistrer les modifications' : 'Ajouter l’annotation'}
+                </button>
+                <button type="button" className="explorer-btn" onClick={resetForm}>{editingId ? 'Annuler' : 'Vider le formulaire'}</button>
               </div>
             </fieldset>
           </form>
+
+          {current && (() => {
+            const mine = annotations[annotationKey(current.platform, current.id)] || [];
+            return (
+              <section className="explorer-section">
+                <button type="button" className="explorer-section-toggle" aria-expanded={mineOpen} onClick={() => setMineOpen((open) => !open)}>
+                  {mineOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  <PencilLine size={13} /> Mes annotations sur ce {current.platform === 'bluesky' ? 'post' : 'tweet'} ({mine.length})
+                </button>
+                {mineOpen && (
+                  <div className="explorer-section-body">
+                    {!mine.length && <div className="explorer-section-empty">Aucune annotation pour l’instant. Remplissez le formulaire puis « Ajouter l’annotation ».</div>}
+                    {mine.map((item) => {
+                      const recipients = item.shared_with || [];
+                      return (
+                        <AnnotationSummary
+                          key={item.id}
+                          item={item}
+                          highlighted={item.id === editingId}
+                          title={item.id === editingId ? 'En cours de modification' : 'Mon annotation'}
+                          action={(
+                            <>
+                              <div className="explorer-annotation-card-share">
+                                <Share2 size={12} /> {recipients.length ? `Partagée avec ${recipients.map(nameOf).join(', ')}${item.share_notes === false ? ' (sans le commentaire libre)' : ''}` : 'Non partagée individuellement'}
+                              </div>
+                              <div className="explorer-annotation-card-actions">
+                                <button type="button" className="explorer-btn" onClick={() => startEdit(item)}>Modifier</button>
+                                <button type="button" className="explorer-btn" onClick={() => (postShareOpen === item.id ? setPostShareOpen(null) : openPostShare(item))}>
+                                  {postShareOpen === item.id ? 'Annuler le partage' : 'Partager'}
+                                </button>
+                                <button type="button" className="explorer-btn danger" onClick={() => removeAnnotation(item)}>Supprimer</button>
+                              </div>
+                              {postShareOpen === item.id && (
+                                <div className="explorer-post-share-body">
+                                  <div className="explorer-share-list compact">
+                                    {directory.filter((person) => person.id !== user.id).map((person) => (
+                                      <label key={person.id} className="explorer-share-row">
+                                        <input
+                                          type="checkbox"
+                                          checked={postShareDraft.has(person.id)}
+                                          onChange={() => setPostShareDraft((draft) => {
+                                            const next = new Set(draft);
+                                            if (next.has(person.id)) next.delete(person.id); else next.add(person.id);
+                                            return next;
+                                          })}
+                                        />
+                                        <span><strong>{person.name}</strong> <span className="explorer-share-username">{person.username}</span></span>
+                                      </label>
+                                    ))}
+                                  </div>
+                                  <label className="explorer-share-notes">
+                                    <input type="checkbox" checked={postShareNotesDraft} onChange={(event) => setPostShareNotesDraft(event.target.checked)} />
+                                    Inclure mon commentaire libre
+                                  </label>
+                                  <button type="button" className="explorer-btn primary" disabled={postShareSaving} onClick={() => savePostShare(item)}>{postShareSaving ? 'Enregistrement…' : 'Enregistrer le partage'}</button>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            );
+          })()}
+
+          {current && (
+            <section className="explorer-section">
+              <button type="button" className="explorer-section-toggle" aria-expanded={sharedOpen} onClick={() => setSharedOpen((open) => !open)}>
+                {sharedOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                <Users size={13} /> {user.role === 'admin' ? 'Annotations de l’équipe' : 'Partagées avec moi'} ({postAnnotations?.shared.length ?? '…'})
+              </button>
+              {sharedOpen && (
+                <div className="explorer-section-body">
+                  {!postAnnotations && <div className="explorer-section-empty">Chargement…</div>}
+                  {postAnnotations && !postAnnotations.shared.length && (
+                    <div className="explorer-section-empty">
+                      {user.role === 'admin' ? 'Personne d’autre n’a annoté ce post.' : 'Aucune annotation de ce post n’est partagée avec vous.'}
+                    </div>
+                  )}
+                  {postAnnotations?.shared.map((item) => (
+                    <AnnotationSummary key={item.id} item={item} title={item.name || item.username} />
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
           {legacyCount > 0 ? (
             <div className="explorer-hint">
               {legacyCount} annotation(s) faites avant les comptes sont encore dans ce navigateur.
               <button type="button" className="explorer-btn primary" style={{ marginTop: 8 }} onClick={importLegacy}>Les importer dans mon compte</button>
             </div>
           ) : (
-            <div className="explorer-hint">Vos annotations sont visibles par vous et par les administrateurs. Export via le menu « Exporter ».</div>
+            <div className="explorer-hint">
+              Vos annotations sont visibles par {frenchList(['vous', 'les administrateurs', ...(shares?.shared_with || []).map((item) => item.name)])}.{shares?.shared_with.length && shares.include_notes === false ? ' Vos commentaires libres ne sont pas inclus dans le partage complet.' : ''}
+              {shares?.shared_with_me.length ? ` Partagées avec vous par : ${shares.shared_with_me.map((item) => item.name).join(', ')}.` : ''}
+            </div>
           )}
         </aside>
       </div>
+
+      {shareDialogOpen && (
+        <div className="explorer-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShareDialogOpen(false); }}>
+          <div className="explorer-modal explorer-share-modal" role="dialog" aria-modal="true" aria-labelledby="explorer-share-title">
+            <div className="explorer-modal-head">
+              <h2 id="explorer-share-title">Partager toutes mes annotations</h2>
+              <button type="button" className="explorer-btn" onClick={() => setShareDialogOpen(false)}>Fermer</button>
+            </div>
+            <div className="explorer-modal-body">
+              <p className="explorer-share-help">
+                Les personnes cochées pourront lire toutes vos annotations, présentes et futures, sans pouvoir les modifier. Pour ne partager qu’une annotation, utilisez « Partager » sur cette annotation dans le panneau d’annotation. Les administrateurs voient déjà les annotations de toute l’équipe.
+              </p>
+              <div className="explorer-share-list">
+                {!directory.length && <div className="explorer-section-empty">Chargement des comptes…</div>}
+                {directory.filter((item) => item.id !== user.id).map((item) => (
+                  <label key={item.id} className="explorer-share-row">
+                    <input
+                      type="checkbox"
+                      checked={shareDraft.has(item.id)}
+                      onChange={() => setShareDraft((current) => {
+                        const next = new Set(current);
+                        if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+                        return next;
+                      })}
+                    />
+                    <span><strong>{item.name}</strong> <span className="explorer-share-username">{item.username}</span></span>
+                  </label>
+                ))}
+              </div>
+              <label className="explorer-share-notes">
+                <input type="checkbox" checked={shareNotesDraft} onChange={(event) => setShareNotesDraft(event.target.checked)} />
+                Inclure mes commentaires libres (sinon, seuls le statut, la pertinence, le thème, la tonalité, l’interaction et les mots-clés sont partagés)
+              </label>
+              {shares?.shared_with_me.length ? (
+                <p className="explorer-share-help">Partagent leurs annotations avec vous : {shares.shared_with_me.map((item) => item.name).join(', ')}.</p>
+              ) : null}
+              <div className="explorer-save-row">
+                <button type="button" className="explorer-btn primary" disabled={shareSaving} onClick={saveShares}>{shareSaving ? 'Enregistrement…' : 'Enregistrer le partage'}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {detailsOpen && current && (
         <div className="explorer-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDetailsOpen(false); }}>
