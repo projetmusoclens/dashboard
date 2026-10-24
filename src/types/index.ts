@@ -15,6 +15,8 @@ export interface CollectionContext {
 
 export interface CollectionStats {
   collection_name: string;
+  // Événement de la collecte (collection_context.event), '' s'il n'est pas renseigné.
+  event?: string;
   count: number;
   reposts: number;
   quotes: number;

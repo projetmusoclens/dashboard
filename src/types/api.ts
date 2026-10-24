@@ -83,6 +83,10 @@ export interface Collection {
   id: string;
   name: string;
   count: number;
+  // Événement de la collecte (collection_context.event), '' s'il n'est pas renseigné.
+  event?: string;
+  // Date du premier post, pour ordonner les événements.
+  first_at?: string | null;
 }
 
 export interface StatsResponse {

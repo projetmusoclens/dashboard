@@ -21,15 +21,15 @@ function makePost(collectionName) {
 
 test('groups posts by normalized collection_context name, not keywords or batches', () => {
   const collections = groupCollections([
-    { collection_context: { collection_name: 'twitter_fra_live' }, matched_keywords: ['worldcup'] },
-    { collection_context: { collection_name: ' twitter_fra_live ' }, batch_id: 'batch-2' },
+    { collection_context: { collection_name: 'twitter_fra_live', event: 'fra_par' }, matched_keywords: ['worldcup'], timestamp: '2026-07-04T20:00:00Z' },
+    { collection_context: { collection_name: ' twitter_fra_live ' }, batch_id: 'batch-2', timestamp: '2026-07-04T19:00:00Z' },
     { collection_context: { collection_name: 'TWITTER_FRA_LIVE' } },
-    { collection_context: { collection_name: 'bluesky_fra_live' } },
+    { collection_context: { collection_name: 'bluesky_fra_live', event: ' firehose ' } },
   ]);
 
   assert.deepEqual(collections, [
-    { id: 'twitter_fra_live', name: 'twitter_fra_live', count: 3 },
-    { id: 'bluesky_fra_live', name: 'bluesky_fra_live', count: 1 },
+    { id: 'twitter_fra_live', name: 'twitter_fra_live', count: 3, event: 'fra_par', first_at: '2026-07-04T19:00:00Z' },
+    { id: 'bluesky_fra_live', name: 'bluesky_fra_live', count: 1, event: 'firehose', first_at: null },
   ]);
 });
 
@@ -40,7 +40,7 @@ test('places missing or blank context names in one explicit unknown group', () =
   ]);
 
   assert.deepEqual(collections, [
-    { id: 'collecte inconnue', name: 'Collecte inconnue', count: 2 },
+    { id: 'collecte inconnue', name: 'Collecte inconnue', count: 2, event: '', first_at: null },
   ]);
 });
 

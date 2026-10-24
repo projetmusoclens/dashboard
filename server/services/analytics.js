@@ -1,4 +1,4 @@
-const { collectionKey, normalizeCollectionName } = require('./collections');
+const { collectionKey, eventName, normalizeCollectionName } = require('./collections');
 
 // Hashtags Unicode (#España, #كأس_العالم) : le motif Mongo des statistiques suit la même règle.
 const HASHTAG_PATTERN = /#[\p{L}\p{N}_]+/gu;
@@ -73,7 +73,7 @@ function buildStatsFromPosts(posts) {
     });
     const collectionName = normalizeCollectionName(post.collection_name);
     const key = collectionKey(collectionName);
-    const item = collections[key] || { collection_name: collectionName, count: 0, reposts: 0, quotes: 0, emojis: 0, links: 0 };
+    const item = collections[key] || { collection_name: collectionName, event: eventName(post.collection_context?.event), count: 0, reposts: 0, quotes: 0, emojis: 0, links: 0 };
     item.count += 1;
     item.reposts += post.engagement.reposts || 0;
     item.quotes += post.engagement.quotes || 0;

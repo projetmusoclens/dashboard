@@ -224,7 +224,7 @@ body {
 .collection-picker { position: relative; }
 .collection-picker-button { display: inline-flex; align-items: center; gap: 6px; max-width: 280px; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text-primary); font: inherit; font-size: 13px; cursor: pointer; }
 .collection-picker-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.collection-picker-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; width: min(360px, 90vw); max-height: 60vh; overflow: auto; background: var(--card-bg); color: var(--text-primary); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 14px 34px rgba(16, 24, 40, 0.18); padding: 6px; }
+.collection-picker-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; width: min(480px, 92vw); max-height: 60vh; overflow: auto; background: var(--card-bg); color: var(--text-primary); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 14px 34px rgba(16, 24, 40, 0.18); padding: 6px; }
 .collection-picker-actions { display: flex; justify-content: space-between; gap: 6px; padding: 2px 4px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
 .collection-picker-actions button { border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; padding: 3px 4px; }
 .collection-picker-actions button:disabled { color: var(--text-muted); cursor: default; }

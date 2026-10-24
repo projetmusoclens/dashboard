@@ -20,7 +20,7 @@ Les routes lisent et valident les paramètres, les services normalisent les docu
 | `server/services/blueskyProfiles.js` | Noms, pseudos et avatars des comptes Bluesky (API publique de Bluesky, cache mémoire et collection `bluesky_profiles`, 7 jours). |
 | `server/services/accounts.js` | Hachage scrypt, jetons signés HMAC, validation, stockage MongoDB ou mémoire, création du premier admin. |
 | `server/middleware/auth.js` | Vérification du jeton de session, rôle admin et limitation des échecs de connexion. |
-| `server/routes/collections.js` | Route `/api/collections`, avec agrégation côté Mongo ou regroupement du fallback archive. |
+| `server/routes/collections.js` | Route `/api/collections` : collectes avec leur volume, leur événement (`collection_context.event`) et leur date de début (`started_at`), agrégées côté Mongo ou regroupées depuis l’archive. |
 | `server/services/normalization.js` | Forme canonique des posts, du contexte de collecte, des dates et des médias. |
 | `server/services/collections.js` | Identité, regroupement et expressions Mongo des collectes. |
 | `server/services/query.js` | Construction des filtres Mongo (dont recherche `q` et type `kind`) et équivalent pour les posts chargés en mémoire. |
@@ -65,6 +65,7 @@ La clé est dérivée des données : il n’existe pas de liste codée en dur ni
 | `src/utils/annotations.ts` | Stockage local des annotations de l’Explorer. |
 | `src/utils/graphLayouts.ts` | Spatialisations (graphology : ForceAtlas2, force, Noverlap, Louvain/circlepack) et dispositions géométriques. |
 | `src/utils/subgraphExport.ts` | Sous-graphe induit et exports JSON / CSV / GEXF (statique ou dynamique). |
+| `src/utils/events.ts` | Événements de collecte : libellés lisibles, regroupement des collectes par événement, libellé d’une sélection. |
 | `src/utils/graphTime.ts` | Fenêtres de temps du graphe dynamique : sommes sur une fenêtre, bornes, tailles proposées. |
 | `src/utils/download.ts` | Téléchargements et CSV côté navigateur. |
 | `src/App.test.tsx` et `src/setupTests.ts` | Test de rendu et configuration Testing Library. |

@@ -1,9 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { Collection } from '../types';
+import { describeSelection, eventDate, groupByEvent } from '../utils/events';
 import { langLabel } from '../utils/languages';
 
 interface DashboardFiltersProps {
-  collections: { id: string; name: string; count: number }[];
+  collections: Collection[];
   languages: Record<string, number>;
   selectedCollections: string[];
   platform: string;
@@ -20,10 +22,9 @@ interface DashboardFiltersProps {
 const labelStyle: React.CSSProperties = { fontSize: 12, color: 'var(--text-muted)' };
 const selectStyle: React.CSSProperties = { padding: '0.5rem 0.75rem', borderRadius: 8 };
 
-type CollectionOption = DashboardFiltersProps['collections'][number];
-
-// Liste déroulante à cases à cocher : aucune case cochée = toutes les collectes.
-const CollectionPicker: React.FC<{ collections: CollectionOption[]; selected: string[]; onChange: (value: string[]) => void }> = ({ collections, selected, onChange }) => {
+// Liste déroulante à cases à cocher : une case par événement (toutes ses collectes à la fois).
+// Les collectes sans événement gardent chacune leur case. Aucune case cochée = toutes les collectes.
+const CollectionPicker: React.FC<{ collections: Collection[]; selected: string[]; onChange: (value: string[]) => void }> = ({ collections, selected, onChange }) => {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -36,33 +37,46 @@ const CollectionPicker: React.FC<{ collections: CollectionOption[]; selected: st
     document.addEventListener('keydown', close);
     return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', close); };
   }, [open]);
-  const toggle = (id: string) => onChange(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
+
+  // Options : un événement = toutes ses collectes ; une collecte sans événement = elle seule.
+  const options = useMemo(() => groupByEvent(collections).flatMap((group) => (group.event
+    ? [{ key: `event:${group.event}`, label: group.label, ids: group.collections.map((collection) => collection.id), count: group.count, date: eventDate(group.firstAt) }]
+    : group.collections.map((collection) => ({ key: collection.id, label: collection.name, ids: [collection.id], count: collection.count, date: '' })))), [collections]);
+  const chosen = new Set(selected);
+  const toggle = (ids: string[]) => {
+    const all = ids.every((id) => chosen.has(id));
+    onChange(all ? selected.filter((id) => !ids.includes(id)) : Array.from(new Set([...selected, ...ids])));
+  };
   const needle = search.trim().toLowerCase();
-  const visible = needle ? collections.filter((item) => item.name.toLowerCase().includes(needle)) : collections;
-  const names = collections.filter((item) => selected.includes(item.id)).map((item) => item.name);
-  const label = !names.length ? 'Toutes les collectes' : names.length === 1 ? names[0] : `${names.length} collectes`;
+  const visible = needle ? options.filter((option) => option.label.toLowerCase().includes(needle)) : options;
+  const label = describeSelection(collections, selected);
+  const hasEvents = collections.some((collection) => collection.event);
+
   return (
     <div className="collection-picker" ref={rootRef}>
-      <button type="button" id="collection-filter" className="collection-picker-button" aria-haspopup="true" aria-expanded={open} title={names.join(', ') || undefined} onClick={() => setOpen((value) => !value)}>
-        <span>{label}</span> <ChevronDown size={14} />
+      <button type="button" id="collection-filter" className="collection-picker-button" aria-haspopup="true" aria-expanded={open} title={selected.length ? label : undefined} onClick={() => setOpen((value) => !value)}>
+        <span>{selected.length ? label : hasEvents ? 'Tous les événements' : 'Toutes les collectes'}</span> <ChevronDown size={14} />
       </button>
       {open && (
-        <div className="collection-picker-menu" role="group" aria-label="Collectes">
+        <div className="collection-picker-menu" role="group" aria-label={hasEvents ? 'Événements' : 'Collectes'}>
           <div className="collection-picker-actions">
-            <button type="button" onClick={() => onChange([])} disabled={!selected.length}>Toutes les collectes</button>
+            <button type="button" onClick={() => onChange([])} disabled={!selected.length}>{hasEvents ? 'Tous les événements' : 'Toutes les collectes'}</button>
             <button type="button" onClick={() => setOpen(false)}>Fermer</button>
           </div>
-          {collections.length > 10 && (
-            <input className="collection-picker-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Filtrer les collectes…" aria-label="Filtrer les collectes" autoFocus />
+          {options.length > 10 && (
+            <input className="collection-picker-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={hasEvents ? 'Filtrer : pays, match…' : 'Filtrer les collectes…'} aria-label="Filtrer" autoFocus />
           )}
-          {!visible.length && <div className="collection-picker-empty">Aucune collecte ne correspond.</div>}
-          {visible.map((collection) => (
-            <label key={collection.id} className="collection-picker-row">
-              <input type="checkbox" checked={selected.includes(collection.id)} onChange={() => toggle(collection.id)} />
-              <span className="collection-picker-name">{collection.name}</span>
-              <span className="collection-picker-count">{collection.count.toLocaleString('fr-FR')}</span>
-            </label>
-          ))}
+          {!visible.length && <div className="collection-picker-empty">Aucun résultat.</div>}
+          {visible.map((option) => {
+            const picked = option.ids.filter((id) => chosen.has(id)).length;
+            return (
+              <label key={option.key} className="collection-picker-row">
+                <input type="checkbox" checked={picked === option.ids.length} onChange={() => toggle(option.ids)} />
+                <span className="collection-picker-name">{option.label}</span>
+                <span className="collection-picker-count">{option.date ? `${option.date} · ` : ''}{option.count.toLocaleString('fr-FR')}</span>
+              </label>
+            );
+          })}
         </div>
       )}
     </div>
@@ -86,7 +100,7 @@ const DashboardFilters: React.FC<DashboardFiltersProps> = ({
   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
     {collections.length > 0 && (
       <>
-        <label htmlFor="collection-filter" style={labelStyle}>Collectes :</label>
+        <label htmlFor="collection-filter" style={labelStyle}>{collections.some((collection) => collection.event) ? 'Événements :' : 'Collectes :'}</label>
         <CollectionPicker collections={collections} selected={selectedCollections} onChange={onCollectionsChange} />
       </>
     )}

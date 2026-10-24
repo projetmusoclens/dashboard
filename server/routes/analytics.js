@@ -1,4 +1,5 @@
 const {
+  eventName,
   mongoCollectionKeyExpression,
   mongoCollectionNameExpression,
 } = require('../services/collections');
@@ -73,7 +74,7 @@ function registerAnalyticsRoutes(app, {
       top_authors: [{ $group: { _id: '$normalizedAuthor', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 20 }],
       by_keyword: [{ $unwind: '$matched_keywords' }, { $group: { _id: '$matched_keywords', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 100 }],
       hashtags: [{ $project: { tags: { $regexFindAll: { input: { $ifNull: ['$text', ''] }, regex: MONGO_HASHTAG_PATTERN } } } }, { $unwind: '$tags' }, { $group: { _id: { $toLower: '$tags.match' }, count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 100 }],
-      collection_stats: [{ $group: { _id: '$normalizedCollectionKey', collection_name: { $min: '$normalizedCollection' }, count: { $sum: 1 }, reposts: { $sum: { $ifNull: ['$repostsValue', 0] } }, quotes: { $sum: { $ifNull: ['$quotesValue', 0] } }, links: { $sum: { $cond: ['$hasLink', 1, 0] } }, emojis: { $sum: '$emojiCount' } } }, { $sort: { count: -1, collection_name: 1 } }],
+      collection_stats: [{ $group: { _id: '$normalizedCollectionKey', collection_name: { $min: '$normalizedCollection' }, event: { $max: '$collection_context.event' }, count: { $sum: 1 }, reposts: { $sum: { $ifNull: ['$repostsValue', 0] } }, quotes: { $sum: { $ifNull: ['$quotesValue', 0] } }, links: { $sum: { $cond: ['$hasLink', 1, 0] } }, emojis: { $sum: '$emojiCount' } } }, { $sort: { count: -1, collection_name: 1 } }],
       posts_vs_replies: [{ $group: { _id: { $cond: [{ $ne: ['$replyMarker', ''] }, 'replies', 'posts'] }, count: { $sum: 1 } } }],
       by_type: [{ $group: {
         _id: null,
@@ -95,7 +96,7 @@ function registerAnalyticsRoutes(app, {
       top_authors: (doc.top_authors || []).map((item) => ({ author: item._id, count: item.count })),
       by_keyword: (doc.by_keyword || []).reduce((result, item) => { result[item._id] = item.count; return result; }, {}),
       hashtags: (doc.hashtags || []).reduce((result, item) => { result[item._id] = item.count; return result; }, {}),
-      collection_stats: (doc.collection_stats || []).map((item) => ({ collection_name: item.collection_name, count: item.count, reposts: item.reposts, quotes: item.quotes, emojis: item.emojis, links: item.links, link_rate: item.count ? (item.links / item.count) * 100 : 0 })),
+      collection_stats: (doc.collection_stats || []).map((item) => ({ collection_name: item.collection_name, event: eventName(item.event), count: item.count, reposts: item.reposts, quotes: item.quotes, emojis: item.emojis, links: item.links, link_rate: item.count ? (item.links / item.count) * 100 : 0 })),
       posts_vs_replies: postsVsReplies,
       by_type: (({ _id, ...counts }) => counts)(doc.by_type?.[0] || { original: 0, replies: 0, retweets: 0, quotes: 0 }),
       engagement_avg: doc.engagement_avg?.[0] || {},

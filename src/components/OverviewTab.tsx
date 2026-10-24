@@ -1,16 +1,17 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   PieChart, Pie, Cell, Tooltip, BarChart, Bar, LabelList,
   XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineChart, Line, Legend,
 } from 'recharts';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { DashboardData, TimelineResponse } from '../types';
+import { Collection, CollectionStats, DashboardData, TimelineResponse } from '../types';
 import { CHART_COLORS } from '../data/dashboardData';
 import KpiCard from './KpiCard';
 import { fmtNum } from '../utils/format';
 import { groupLanguages, LanguageSlice } from '../utils/languages';
+import { eventLabel, groupByEvent } from '../utils/events';
 
-interface OverviewTabProps { data: DashboardData; selectedCollections?: string[]; timeline?: TimelineResponse | null }
+interface OverviewTabProps { data: DashboardData; timeline?: TimelineResponse | null; collections?: Collection[] }
 
 export const PLATFORM_META: Record<string, { label: string; color: string }> = {
   twitter: { label: 'Twitter', color: '#2a78d6' },
@@ -60,7 +61,38 @@ const LanguageTooltip: React.FC<any> = ({ active, payload, total }) => {
   );
 };
 
-const OverviewTab: React.FC<OverviewTabProps> = ({ data, selectedCollections = [], timeline = null }) => {
+// Cellules chiffrées d'une ligne du tableau (total d'un événement, ou collecte sans événement).
+const StatCells: React.FC<{ item: Omit<CollectionStats, 'collection_name'> }> = ({ item }) => {
+  const cell: React.CSSProperties = { textAlign: 'right', padding: '0.75rem 0.5rem' };
+  return (
+    <>
+      <td style={cell}>{fmtNum(item.count)}</td>
+      <td style={cell}>{fmtNum(item.reposts)}</td>
+      <td style={cell}>{fmtNum(item.quotes)}</td>
+      <td style={cell}>{fmtNum(item.emojis)}</td>
+      <td style={cell}>{fmtNum(item.links)}</td>
+      <td style={cell}>{item.link_rate.toFixed(1)}%</td>
+    </>
+  );
+};
+
+const OverviewTab: React.FC<OverviewTabProps> = ({ data, timeline = null, collections = [] }) => {
+  // Tableau regroupé par événement (collection_context.event) : une ligne par événement, totaux de ses collectes.
+  // Une collecte sans événement garde sa propre ligne.
+  const eventStats = useMemo(() => {
+    const rows = new Map<string, { key: string; event: string; label: string; total: Omit<CollectionStats, 'collection_name'> }>();
+    data.collection_stats.forEach((item) => {
+      const event = item.event || '';
+      const key = event ? `event:${event}` : item.collection_name;
+      const row = rows.get(key) || { key, event, label: event ? eventLabel(event) : item.collection_name, total: { count: 0, reposts: 0, quotes: 0, emojis: 0, links: 0, link_rate: 0 } };
+      (['count', 'reposts', 'quotes', 'emojis', 'links'] as const).forEach((metric) => { row.total[metric] += item[metric] || 0; });
+      row.total.link_rate = row.total.count ? (row.total.links / row.total.count) * 100 : 0;
+      rows.set(key, row);
+    });
+    // Même ordre que le sélecteur : chronologique (début de la collecte), puis par volume.
+    const order = new Map(groupByEvent(collections).map((group, index) => [group.event, index]));
+    return Array.from(rows.values()).sort((left, right) => (order.get(left.event) ?? 999) - (order.get(right.event) ?? 999) || right.total.count - left.total.count);
+  }, [data.collection_stats, collections]);
   const [typeSlide, setTypeSlide] = useState(0);
   // Seuils du regroupement « Autres » : part minimale d'une langue et nombre maximal de parts.
   const [langMinShare, setLangMinShare] = useState(0.01);
@@ -285,15 +317,15 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, selectedCollections = [
         </div>
       </div>
 
-      {/* Comparaison utile dès qu'il y a plusieurs collectes dans la sélection. */}
-      {selectedCollections.length !== 1 && (
+      {/* Comparaison utile dès que la sélection couvre plusieurs événements. */}
+      {eventStats.length > 1 && (
         <div style={{ ...cardStyle, marginBottom: '1rem' }}>
-          <h3 style={titleStyle}>Statistiques par collecte</h3>
+          <h3 style={titleStyle}>{eventStats.some((row) => row.event) ? 'Statistiques par événement' : 'Statistiques par collecte'}</h3>
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr>
-                  <th style={{ textAlign: 'left', padding: '0.75rem 0.5rem', color: 'var(--text-muted)' }}>Collecte</th>
+                  <th style={{ textAlign: 'left', padding: '0.75rem 0.5rem', color: 'var(--text-muted)' }}>{eventStats.some((row) => row.event) ? 'Événement' : 'Collecte'}</th>
                   <th style={{ textAlign: 'right', padding: '0.75rem 0.5rem', color: 'var(--text-muted)' }}>Posts</th>
                   <th style={{ textAlign: 'right', padding: '0.75rem 0.5rem', color: 'var(--text-muted)' }}>Retweets</th>
                   <th style={{ textAlign: 'right', padding: '0.75rem 0.5rem', color: 'var(--text-muted)' }}>Citations</th>
@@ -303,15 +335,10 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, selectedCollections = [
                 </tr>
               </thead>
               <tbody>
-                {data.collection_stats.map((item) => (
-                  <tr key={item.collection_name} style={{ borderTop: '1px solid var(--border)' }}>
-                    <td style={{ padding: '0.75rem 0.5rem', color: 'var(--text-primary)', minWidth: 145 }}>{item.collection_name}</td>
-                    <td style={{ textAlign: 'right', padding: '0.75rem 0.5rem' }}>{fmtNum(item.count)}</td>
-                    <td style={{ textAlign: 'right', padding: '0.75rem 0.5rem' }}>{fmtNum(item.reposts)}</td>
-                    <td style={{ textAlign: 'right', padding: '0.75rem 0.5rem' }}>{fmtNum(item.quotes)}</td>
-                    <td style={{ textAlign: 'right', padding: '0.75rem 0.5rem' }}>{fmtNum(item.emojis)}</td>
-                    <td style={{ textAlign: 'right', padding: '0.75rem 0.5rem' }}>{fmtNum(item.links)}</td>
-                    <td style={{ textAlign: 'right', padding: '0.75rem 0.5rem' }}>{item.link_rate.toFixed(1)}%</td>
+                {eventStats.map((row) => (
+                  <tr key={row.key} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ padding: '0.75rem 0.5rem', color: 'var(--text-primary)', minWidth: 145 }}>{row.label}</td>
+                    <StatCells item={row.total} />
                   </tr>
                 ))}
               </tbody>

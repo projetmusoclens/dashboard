@@ -16,6 +16,7 @@ import DashboardFilters from './components/DashboardFilters';
 import ErrorBoundary from './components/ErrorBoundary';
 import { fmtNum } from './utils/format';
 import './App.css';
+import { describeSelection } from './utils/events';
 
 const PAGE_SUBTITLES: Record<TabId, string> = {
   overview: 'Vue d’ensemble de la sélection : volume, langues, types de publications et mots-clés',
@@ -96,8 +97,7 @@ function App() {
     document.title = `${APP_TITLE} · ${activeLabel ?? 'Dashboard'}`;
   }, [activeLabel]);
 
-  const collectionNames = collections.filter((item) => selectedCollections.includes(item.id)).map((item) => item.name);
-  const collectionLabel = !collectionNames.length ? 'toutes les collectes' : collectionNames.length <= 3 ? collectionNames.join(', ') : `${collectionNames.length} collectes`;
+  const collectionLabel = describeSelection(collections, selectedCollections);
   const platformsLabel = Object.keys(dashboardData.by_platform).filter((key) => dashboardData.by_platform[key] > 0).join(' / ');
 
   return (
@@ -200,7 +200,7 @@ function App() {
           )}
           {!loadingData && !loadingError && (
             <ErrorBoundary resetKey={activeTab}>
-              {activeTab === 'overview' && <OverviewTab data={dashboardData} selectedCollections={selectedCollections} timeline={timeline} />}
+              {activeTab === 'overview' && <OverviewTab data={dashboardData} timeline={timeline} collections={collections} />}
               {activeTab === 'posts' && (
                 <ExplorerTab
                   filters={filters}
