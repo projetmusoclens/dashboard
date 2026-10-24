@@ -1,0 +1,16 @@
+# Contexte de build Docker (deploy/ovh/Dockerfile) : seul server/ et les package*.json sont utiles.
+node_modules
+build
+coverage
+.git
+docs
+public
+src
+deploy/ovh/.env
+deploy/ovh/backups
+server/.env
+wc2026_extract*
+data_final
+*.bson
+*.gz
+*.jsonl

@@ -45,9 +45,11 @@ La clé est dérivée des données : il n’existe pas de liste codée en dur ni
 | `src/App.css` et `src/index.css` | Mise en page et styles globaux. |
 | `src/components/OverviewTab.tsx` | Indicateurs et graphiques de synthèse. |
 | `src/components/ExplorerTab.tsx` | Lecteur-annotateur : liste filtrable, lecture, détails, annotations multiples par post, partage et exports. |
-| `src/components/GraphsTab.tsx` | Rendu Sigma, spatialisation, voisinage, sélection et export de sous-graphe. |
-| `src/components/DashboardFilters.tsx` | Contrôles partagés de collecte, plateforme, langue et période. |
-| `src/components/ThreadsTab.tsx` | Liste des conversations et lecture en arbre, export d’une conversation. |
+| `src/components/GraphsTab.tsx` | Rendu Sigma, spatialisation, voisinage, sélection, graphe dynamique et export de sous-graphe. |
+| `src/components/GraphTimeBar.tsx` | Frise du graphe dynamique (volume par tranche, fenêtre, lecture) et courbe d’activité d’un nœud. |
+| `src/components/DashboardFilters.tsx` | Contrôles partagés de collectes (choix multiple, `collectionId=a,b`), plateforme, langue et période. |
+| `src/components/AnnotationPanel.tsx` | Panneau d’annotation commun à l’Explorer et à Threads (formulaire, mes annotations du post, annotations partagées) et hooks `useMyAnnotations`, `useDirectory`. |
+| `src/components/ThreadsTab.tsx` | Liste des conversations, lecture en arbre, annotation des posts et export d’une conversation. |
 | `src/components/AuthGate.tsx` | Écran de connexion et contexte de l’utilisateur connecté (`useAuth`). |
 | `src/components/UsersTab.tsx` | Gestion des comptes (administrateurs). |
 | `src/components/ChangePasswordDialog.tsx` | Changement de son mot de passe. |
@@ -62,7 +64,8 @@ La clé est dérivée des données : il n’existe pas de liste codée en dur ni
 | `src/utils/postRecord.ts` | Vue lecteur d’un post (raw_json X / Bluesky). |
 | `src/utils/annotations.ts` | Stockage local des annotations de l’Explorer. |
 | `src/utils/graphLayouts.ts` | Spatialisations (graphology : ForceAtlas2, force, Noverlap, Louvain/circlepack) et dispositions géométriques. |
-| `src/utils/subgraphExport.ts` | Sous-graphe induit et exports JSON / CSV / GEXF. |
+| `src/utils/subgraphExport.ts` | Sous-graphe induit et exports JSON / CSV / GEXF (statique ou dynamique). |
+| `src/utils/graphTime.ts` | Fenêtres de temps du graphe dynamique : sommes sur une fenêtre, bornes, tailles proposées. |
 | `src/utils/download.ts` | Téléchargements et CSV côté navigateur. |
 | `src/App.test.tsx` et `src/setupTests.ts` | Test de rendu et configuration Testing Library. |
 
@@ -87,6 +90,8 @@ Au démarrage, l’API crée si besoin les index `posts.post_id`, `posts.reply_t
 ## Graphes
 
 `GET /api/graph` parcourt les posts filtrés, compte nœuds et arêtes, puis ne renvoie que les `maxNodes` nœuds les plus fréquents (5 000 au plus) et les arêtes d’un poids au moins `minEdgeWeight`, avec `total_nodes` / `total_links` pour le volume complet. Les réponses de l’API sont compressées (gzip). Le rendu utilise Sigma.js (WebGL) sur un graphe graphology ; ForceAtlas2 et Noverlap tournent dans un web worker, la force simple image par image, les autres dispositions sont calculées puis animées. Dans le graphe des mentions, les comptes Bluesky sont identifiés par leur DID (auteurs et facets de mention) et étiquetés avec leur pseudo.
+
+Avec `temporal=1`, `createTemporalGraphBuilder` ajoute à chaque nœud et arête une série creuse `series: [[tranche, posts], …]`, et la réponse un objet `time` (`start`, `bucket_minutes`, `buckets`, `volume` par tranche, `excluded`). La date est celle de la courbe (timestamp, puis createdAt, puis collected_at) et les dates aberrantes sont écartées avec la même règle (`coreTimeBounds`). La tranche vient de `bucketMinutes` ou est choisie pour donner au plus 300 tranches ; `peaks=k` ajoute les k nœuds les plus fréquents de chaque tranche. Le navigateur parcourt ensuite le temps sans nouvelle requête : l’activité de la fenêtre est calculée dans un effet et appliquée par les reducers Sigma, la disposition restant celle de toute la période. Pour 2 000 hashtags (29 000 arêtes) sur un mois, la réponse pèse environ 2,5 Mo, 250 Ko compressés. `startTime` / `endTime` (ISO) filtrent les posts à la seconde près, notamment pour l’export des posts d’un sous-graphe limité à la fenêtre.
 
 ## Annotations : plusieurs par post, partage
 

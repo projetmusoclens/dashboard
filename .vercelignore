@@ -19,3 +19,7 @@ node_modules/
 build/
 coverage/
 docs/
+
+# Déploiement serveur (OVH)
+deploy/
+.dockerignore

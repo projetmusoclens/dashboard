@@ -4,7 +4,7 @@ const compression = require('compression');
 const cors = require('cors');
 const { MONGO_DB_NAME, connectMongo, getDataSource, getDb } = require('./db/data-source');
 const { normalizePost } = require('./services/normalization');
-const { buildGraphFromPosts, buildStatsFromPosts } = require('./services/analytics');
+const { buildStatsFromPosts } = require('./services/analytics');
 const { buildMatchFromQuery } = require('./services/query');
 const { bootstrapAdmin, createMemoryStore, createMongoStore } = require('./services/accounts');
 const { registerAnalyticsRoutes } = require('./routes/analytics');
@@ -76,7 +76,6 @@ const routeDependencies = {
   getDb,
   normalizePost,
   buildStatsFromPosts,
-  buildGraphFromPosts,
   buildMatchFromQuery,
   safeHandler,
   databaseName: MONGO_DB_NAME,

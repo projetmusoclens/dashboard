@@ -74,6 +74,9 @@ export interface QueryParams {
   lang?: string;
   startDate?: string;
   endDate?: string;
+  // Bornes horaires précises (ISO) : fenêtre de temps du graphe dynamique.
+  startTime?: string;
+  endTime?: string;
 }
 
 export interface Collection {
@@ -125,14 +128,32 @@ export type GraphType = 'hashtags' | 'mentions';
 export interface GraphQuery extends QueryParams {
   maxNodes?: number;
   minEdgeWeight?: number;
+  // Graphe dynamique : séries par tranche de temps.
+  temporal?: 1;
+  bucketMinutes?: number;
+  peaks?: number;
+}
+
+// Série creuse : [indice de tranche, nombre de posts], triée par tranche.
+export type TimeSeries = [number, number][];
+
+export interface GraphTime {
+  start: string | null;
+  bucket_minutes: number;
+  buckets: number;
+  // Nombre de posts (filtres actifs) par tranche.
+  volume: number[];
+  // Posts sans date ou aux dates aberrantes, écartés.
+  excluded: number;
 }
 
 export interface GraphResponse {
-  nodes: { id: string; label: string; value: number }[];
-  links: { source: string; target: string; value: number }[];
+  nodes: { id: string; label: string; value: number; series?: TimeSeries }[];
+  links: { source: string; target: string; value: number; series?: TimeSeries }[];
   // Volume avant plafonnement : nombre total de nœuds et d'arêtes pour ces filtres.
   total_nodes?: number;
   total_links?: number;
+  time?: GraphTime;
 }
 
 export type SubgraphPost = Post & { subgraph_nodes: string[]; subgraph_edges: string[] };

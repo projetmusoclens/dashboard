@@ -196,7 +196,9 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  overflow-x: hidden;
+  /* clip et non hidden : hidden ferait de .main un conteneur de défilement et casserait l'en-tête sticky. */
+  overflow-x: clip;
+  min-width: 0;
 }
 
 .page-header {
@@ -205,14 +207,33 @@ body {
   align-items: flex-start;
   padding: 1.4rem 2rem 1.2rem;
   border-bottom: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(8px);
   margin-bottom: 0;
+  /* En-tête (titre et filtres) toujours visible pendant le défilement. */
+  position: sticky;
+  top: 0;
+  z-index: 30;
 }
 
 .app.dark .page-header {
-  background: rgba(11, 17, 32, 0.72);
+  background: rgba(11, 17, 32, 0.9);
 }
+
+/* Sélecteur de collectes (plusieurs choix possibles) */
+.collection-picker { position: relative; }
+.collection-picker-button { display: inline-flex; align-items: center; gap: 6px; max-width: 280px; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text-primary); font: inherit; font-size: 13px; cursor: pointer; }
+.collection-picker-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.collection-picker-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; width: min(360px, 90vw); max-height: 60vh; overflow: auto; background: var(--card-bg); color: var(--text-primary); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 14px 34px rgba(16, 24, 40, 0.18); padding: 6px; }
+.collection-picker-actions { display: flex; justify-content: space-between; gap: 6px; padding: 2px 4px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.collection-picker-actions button { border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; padding: 3px 4px; }
+.collection-picker-actions button:disabled { color: var(--text-muted); cursor: default; }
+.collection-picker-row { display: flex; align-items: center; gap: 8px; padding: 6px; border-radius: 7px; font-size: 13px; cursor: pointer; }
+.collection-picker-row:hover { background: rgba(128, 128, 128, 0.08); }
+.collection-picker-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.collection-picker-count { color: var(--text-muted); font-size: 11px; }
+.collection-picker-search { width: 100%; margin: 0 0 4px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--input-bg); color: var(--text-primary); font: inherit; font-size: 12px; }
+.collection-picker-empty { padding: 8px 6px; font-size: 12px; color: var(--text-muted); }
 
 .page-title {
   font-size: 1.25rem;
@@ -259,7 +280,7 @@ body {
   .sidebar-header { border-bottom: none; padding-bottom: 0; }
   .nav { flex-direction: row; padding: 0; }
   .sidebar-footer { display: none; }
-  .page-header { padding: 1rem 1rem 0.9rem; }
+  .page-header { padding: 1rem 1rem 0.9rem; position: static; }
   .content { padding: 1rem; }
 }
 
@@ -435,7 +456,7 @@ body {
 .threads-search input { width: 100%; padding: 8px 10px 8px 31px; border: 1px solid var(--border); border-radius: 9px; background: var(--input-bg); color: var(--text-primary); font-size: 12px; outline: 0; }
 .threads-stats { font-size: 12px; color: var(--text-muted); }
 .threads-error { color: #e34948; }
-.threads-layout { display: grid; grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); gap: 12px; height: calc(100vh - 210px); min-height: 520px; }
+.threads-layout { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr) minmax(300px, 360px); gap: 12px; height: calc(100vh - 210px); min-height: 520px; }
 .threads-list, .threads-viewer { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; overflow: auto; min-height: 0; }
 .threads-item { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text-primary); padding: 11px 12px; cursor: pointer; font: inherit; }
 .threads-item:hover { background: var(--accent-dim); }
@@ -484,6 +505,18 @@ body {
 .threads-metrics { display: flex; gap: 12px; margin-left: 31px; font-size: 11px; color: var(--text-muted); }
 .threads-metrics span { display: inline-flex; align-items: center; gap: 3px; }
 .threads-toggle { display: inline-flex; align-items: center; gap: 3px; margin: 2px 0 0 38px; border: 0; background: transparent; color: #2a78d6; font-size: 12px; font-weight: 600; cursor: pointer; }
+/* Panneau d'annotation de Threads (mêmes styles que celui de l'Explorer) */
+.threads-annotate { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; border: 1px solid var(--border); background: transparent; color: var(--text-muted); border-radius: 999px; padding: 2px 8px; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
+.threads-annotate:hover { color: var(--accent); border-color: var(--accent); }
+.threads-annotate.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.threads-post.annotating { box-shadow: inset 0 0 0 1px var(--accent); border-radius: 8px; }
+.threads-annotation-target { font-size: 12px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; margin-bottom: 12px; background: rgba(128, 128, 128, 0.04); }
+.threads-annotation-target-label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 3px; }
+.threads-annotation-target-text { margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.4; }
+@media (max-width: 1180px) {
+  .threads-layout { grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); }
+}
+
 @media (max-width: 900px) {
   .threads-layout { grid-template-columns: 1fr; height: auto; }
   .threads-list { max-height: 40vh; }
@@ -538,3 +571,23 @@ body {
 .explorer-annotation-card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
 .explorer-annotation-card-actions .explorer-btn { padding: 4px 9px; font-size: 12px; }
 .explorer-form.editing { outline: 1px dashed var(--accent); outline-offset: 4px; border-radius: 6px; }
+
+/* Graphes — frise du graphe dynamique (posée en haut du graphe, à gauche du bouton plein écran, visible aussi en plein écran) */
+.graph-timebar { position: absolute; left: 10px; right: 58px; top: 10px; z-index: 5; display: grid; gap: 6px; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--border); background: color-mix(in srgb, var(--card-bg) 92%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(6px); }
+.graph-timebar-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--text-secondary); }
+.graph-timebar-controls select { padding: 4px 6px; border-radius: 7px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text-primary); font-size: 12px; }
+.graph-timebar-btn { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text-primary); cursor: pointer; }
+.graph-timebar-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.graph-timebar-check { display: inline-flex; gap: 5px; align-items: center; }
+.graph-timebar-label { margin-left: auto; font-size: 12px; color: var(--text-secondary); }
+.graph-timebar-chart { width: 100%; height: 54px; display: block; cursor: pointer; border-radius: 6px; background: rgba(128, 128, 128, 0.06); outline: none; }
+.graph-timebar-chart:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.graph-timebar-window { fill: var(--accent-dim); }
+.graph-timebar-bar { fill: rgba(128, 128, 128, 0.35); }
+.graph-timebar-bar.active { fill: var(--accent); }
+.graph-timebar-cursor { stroke: #e34948; stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.graph-sparkline { width: 100%; height: 34px; display: block; margin-top: 4px; border-radius: 4px; background: rgba(128, 128, 128, 0.06); }
+.graph-sparkline-bar { fill: #2a78d6; }
+@media (max-width: 760px) {
+  .graph-timebar-label { margin-left: 0; flex-basis: 100%; }
+}

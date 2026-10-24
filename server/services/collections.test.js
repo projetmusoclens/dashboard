@@ -52,6 +52,8 @@ test('uses collection identity consistently in local stats and archive filters',
   assert.equal(stats.collection_stats[0].count, 2);
   assert.equal(matchesPostQuery(posts[0], { collectionId: 'TWITTER_FRA_LIVE' }), true);
   assert.equal(matchesPostQuery(posts[0], { collectionId: 'worldcup' }), false);
+  assert.equal(matchesPostQuery(posts[0], { collectionId: 'worldcup,TWITTER_FRA_LIVE' }), true);
+  assert.equal(matchesPostQuery(posts[0], { collectionId: 'worldcup,other' }), false);
 });
 
 test('preserves full relation weights when building mention graphs', () => {

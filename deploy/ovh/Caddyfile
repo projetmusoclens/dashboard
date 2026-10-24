@@ -1,0 +1,4 @@
+# HTTPS automatique (Let's Encrypt) pour le domaine de l'API, puis relais vers le conteneur api.
+{$API_DOMAIN} {
+	reverse_proxy api:5055
+}

@@ -37,7 +37,7 @@ function App() {
   const [tourOpen, setTourOpen] = useState(false);
   const [loadingData, setLoadingData] = useState(true);
   const [loadingError, setLoadingError] = useState<string | null>(null);
-  const [selectedCollection, setSelectedCollection] = useState<string>('');
+  const [selectedCollections, setSelectedCollections] = useState<string[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [platform, setPlatform] = useState<string>('');
   const [lang, setLang] = useState<string>('');
@@ -53,12 +53,12 @@ function App() {
   }, []);
 
   const filters = useMemo<QueryParams>(() => ({
-    ...(selectedCollection ? { collectionId: selectedCollection } : {}),
+    ...(selectedCollections.length ? { collectionId: selectedCollections.join(',') } : {}),
     ...(platform ? { platform } : {}),
     ...(lang ? { lang } : {}),
     ...(startDate ? { startDate } : {}),
     ...(endDate ? { endDate } : {}),
-  }), [selectedCollection, platform, lang, startDate, endDate]);
+  }), [selectedCollections, platform, lang, startDate, endDate]);
 
   // Statistiques et courbe de la sélection, rechargées à chaque changement de filtre.
   // Les autres onglets chargent leurs propres données quand ils sont ouverts.
@@ -96,7 +96,8 @@ function App() {
     document.title = `${APP_TITLE} · ${activeLabel ?? 'Dashboard'}`;
   }, [activeLabel]);
 
-  const collectionName = collections.find((item) => item.id === selectedCollection)?.name;
+  const collectionNames = collections.filter((item) => selectedCollections.includes(item.id)).map((item) => item.name);
+  const collectionLabel = !collectionNames.length ? 'toutes les collectes' : collectionNames.length <= 3 ? collectionNames.join(', ') : `${collectionNames.length} collectes`;
   const platformsLabel = Object.keys(dashboardData.by_platform).filter((key) => dashboardData.by_platform[key] > 0).join(' / ');
 
   return (
@@ -165,12 +166,12 @@ function App() {
                 <DashboardFilters
                   collections={collections}
                   languages={dashboardData.by_lang}
-                  selectedCollection={selectedCollection}
+                  selectedCollections={selectedCollections}
                   platform={platform}
                   language={lang}
                   startDate={startDate}
                   endDate={endDate}
-                  onCollectionChange={setSelectedCollection}
+                  onCollectionsChange={setSelectedCollections}
                   onPlatformChange={setPlatform}
                   onLanguageChange={setLang}
                   onStartDateChange={setStartDate}
@@ -178,7 +179,7 @@ function App() {
                 />
                 <div className="page-highlight">
                   <span className="db-dot" />
-                  <span>Sélection : {collectionName || 'toutes les collectes'} · {fmtNum(dashboardData.total_posts)} posts</span>
+                  <span>Sélection : {collectionLabel} · {fmtNum(dashboardData.total_posts)} posts</span>
                   {loadingWidgets && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Mise à jour…</span>}
                 </div>
               </>
@@ -199,7 +200,7 @@ function App() {
           )}
           {!loadingData && !loadingError && (
             <ErrorBoundary resetKey={activeTab}>
-              {activeTab === 'overview' && <OverviewTab data={dashboardData} selectedCollection={selectedCollection} timeline={timeline} />}
+              {activeTab === 'overview' && <OverviewTab data={dashboardData} selectedCollections={selectedCollections} timeline={timeline} />}
               {activeTab === 'posts' && (
                 <ExplorerTab
                   filters={filters}

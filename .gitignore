@@ -35,3 +35,7 @@ wc2026_extract*
 data_final/
 *.bson
 public/dashboard-data.json
+
+# Déploiement serveur (OVH) : secrets et sauvegardes
+deploy/ovh/.env
+deploy/ovh/backups/

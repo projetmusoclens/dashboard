@@ -1,0 +1,62 @@
+# Déploiement sur un serveur (OVH) : MongoDB + API + Caddy (HTTPS automatique).
+# Variables lues dans deploy/ovh/.env (copie de .env.example). Voir docs/deploiement.md.
+name: heimdall
+
+services:
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      # Utilisés une seule fois, à la création de la base, par mongo-init.sh.
+      MONGO_APP_USER: ${MONGO_APP_USER}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD}
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo-init.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
+    # Aucun port publié : MongoDB n'est joignable que par l'API, sur le réseau interne de Docker.
+    command: mongod --wiredTigerCacheSizeGB 2
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/ovh/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URI: mongodb://${MONGO_APP_USER}:${MONGO_APP_PASSWORD}@mongo:27017/worldcup2026?authSource=worldcup2026
+      MONGO_DB_NAME: worldcup2026
+      AUTH_SECRET: ${AUTH_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      PORT: 5055
+    # Pas de port publié non plus : seul Caddy l'appelle.
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      API_DOMAIN: ${API_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  mongo_data:
+  caddy_data:
+  caddy_config:

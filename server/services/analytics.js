@@ -126,6 +126,84 @@ function createGraphBuilder(type) {
   return { add, result };
 }
 
+// Date de publication d'un post, comme pour la courbe : timestamp, puis createdAt, puis collected_at.
+function postTime(post) {
+  return new Date(post.timestamp || post.createdAt || post.collected_at || NaN).getTime();
+}
+
+// Séries creuses [[tranche, compte], …] triées par tranche.
+const toSeries = (counts) => Array.from(counts).sort((left, right) => left[0] - right[0]);
+
+// Graphe temporel : mêmes nœuds et arêtes que createGraphBuilder, avec en plus, pour chacun,
+// le nombre de posts par tranche de temps. Le navigateur peut ainsi parcourir le temps sans nouvelle requête.
+function createTemporalGraphBuilder(type) {
+  const records = [];
+  let undated = 0;
+
+  const add = (post) => {
+    const t = postTime(post);
+    if (!Number.isFinite(t)) { undated += 1; return; }
+    const { nodes, edges } = graphEntities(post, type);
+    records.push({ t, nodes, edges });
+  };
+
+  // bucketMinutes : taille imposée, sinon la plus fine qui donne au plus maxBuckets tranches.
+  // peaks : ajoute les `peaks` nœuds les plus fréquents de chaque tranche, même hors du top global.
+  const result = (maxNodes = Infinity, { minEdgeWeight = 1, bucketMinutes = null, maxBuckets = 300, peaks = 0 } = {}) => {
+    const empty = { nodes: [], links: [], total_nodes: 0, total_links: 0, time: { start: null, bucket_minutes: 60, buckets: 0, volume: [], excluded: undated } };
+    if (!records.length) return empty;
+    records.sort((left, right) => left.t - right.t);
+    const bounds = coreTimeBounds(records.map((record) => ({ t: record.t, count: 1 })), records.length);
+    const kept = records.filter((record) => record.t >= bounds.low && record.t <= bounds.high);
+    const minutes = TIMELINE_BUCKETS.includes(bucketMinutes) ? bucketMinutes : bucketFor(kept[kept.length - 1].t - kept[0].t, maxBuckets);
+    const bucketMs = minutes * 60000;
+    const start = Math.floor(kept[0].t / bucketMs) * bucketMs;
+    const bucketCount = Math.floor((kept[kept.length - 1].t - start) / bucketMs) + 1;
+
+    const volume = new Array(bucketCount).fill(0);
+    const nodeTotals = new Map();
+    const nodeSeries = new Map();
+    const edgeTotals = new Map();
+    const edgeSeries = new Map();
+    const bump = (totals, series, key, bucket) => {
+      totals.set(key, (totals.get(key) || 0) + 1);
+      if (!series.has(key)) series.set(key, new Map());
+      const counts = series.get(key);
+      counts.set(bucket, (counts.get(bucket) || 0) + 1);
+    };
+    kept.forEach((record) => {
+      const bucket = Math.floor((record.t - start) / bucketMs);
+      volume[bucket] += 1;
+      record.nodes.forEach((id) => bump(nodeTotals, nodeSeries, id, bucket));
+      record.edges.forEach(([source, target]) => bump(edgeTotals, edgeSeries, edgeKey(source, target), bucket));
+    });
+
+    const keptIds = new Set(Array.from(nodeTotals).sort((a, b) => b[1] - a[1]).slice(0, maxNodes).map(([id]) => id));
+    if (peaks > 0) {
+      const perBucket = Array.from({ length: bucketCount }, () => []);
+      nodeSeries.forEach((counts, id) => counts.forEach((count, bucket) => perBucket[bucket].push([id, count])));
+      perBucket.forEach((entries) => entries.sort((a, b) => b[1] - a[1]).slice(0, peaks).forEach(([id]) => keptIds.add(id)));
+    }
+    const nodes = Array.from(keptIds)
+      .map((id) => ({ id, label: id, value: nodeTotals.get(id), series: toSeries(nodeSeries.get(id)) }))
+      .sort((left, right) => right.value - left.value);
+    const links = [];
+    edgeTotals.forEach((value, key) => {
+      const [source, target] = key.split('::');
+      if (value >= minEdgeWeight && keptIds.has(source) && keptIds.has(target)) links.push({ source, target, value, series: toSeries(edgeSeries.get(key)) });
+    });
+    return {
+      nodes,
+      links,
+      total_nodes: nodeTotals.size,
+      total_links: edgeTotals.size,
+      time: { start: new Date(start).toISOString(), bucket_minutes: minutes, buckets: bucketCount, volume, excluded: undated + records.length - kept.length },
+    };
+  };
+
+  return { add, result };
+}
+
 function buildGraphFromPosts(posts, type, maxNodes, options) {
   const builder = createGraphBuilder(type);
   posts.forEach(builder.add);
@@ -146,16 +224,9 @@ function matchSubgraphPost(post, type, selectedIds) {
 // Pas de regroupement (minutes) : le plus fin qui garde au plus maxPoints points sur la période.
 const TIMELINE_BUCKETS = [1, 5, 10, 15, 30, 60, 180, 360, 720, 1440, 10080];
 
-// rows : [{ date, platform, count }] à la minute. Les dates aberrantes loin du cœur de la
-// distribution (ex. horodatages Bluesky de 2009) sont exclues et comptées à part.
-function buildTimeline(rows, { maxPoints = 160 } = {}) {
-  const items = rows
-    .map((row) => ({ t: new Date(row.date).getTime(), platform: String(row.platform || 'unknown').toLowerCase(), count: Number(row.count) || 0 }))
-    .filter((row) => Number.isFinite(row.t) && row.count > 0)
-    .sort((left, right) => left.t - right.t);
-  const total = items.reduce((sum, row) => sum + row.count, 0);
-  if (!total) return { bucket_minutes: 60, excluded: 0, platforms: [], points: [] };
-
+// Bornes du cœur de la distribution : on retire 0,5 % de chaque côté, puis on garde une marge de 25 %.
+// items : [{ t, count }] triés par date.
+function coreTimeBounds(items, total) {
   const cut = total * 0.005;
   let cumulative = 0;
   let low = items[0].t;
@@ -167,13 +238,28 @@ function buildTimeline(rows, { maxPoints = 160 } = {}) {
     if (cumulative > cut) { high = items[index].t; break; }
   }
   const margin = Math.max(high - low, 60 * 60 * 1000) * 0.25;
-  const kept = items.filter((row) => row.t >= low - margin && row.t <= high + margin);
+  return { low: low - margin, high: high + margin };
+}
+
+const bucketFor = (spanMs, maxPoints) => TIMELINE_BUCKETS.find((minutes) => spanMs / (minutes * 60000) <= maxPoints) || TIMELINE_BUCKETS[TIMELINE_BUCKETS.length - 1];
+
+// rows : [{ date, platform, count }] à la minute. Les dates aberrantes loin du cœur de la
+// distribution (ex. horodatages Bluesky de 2009) sont exclues et comptées à part.
+function buildTimeline(rows, { maxPoints = 160 } = {}) {
+  const items = rows
+    .map((row) => ({ t: new Date(row.date).getTime(), platform: String(row.platform || 'unknown').toLowerCase(), count: Number(row.count) || 0 }))
+    .filter((row) => Number.isFinite(row.t) && row.count > 0)
+    .sort((left, right) => left.t - right.t);
+  const total = items.reduce((sum, row) => sum + row.count, 0);
+  if (!total) return { bucket_minutes: 60, excluded: 0, platforms: [], points: [] };
+
+  const bounds = coreTimeBounds(items, total);
+  const kept = items.filter((row) => row.t >= bounds.low && row.t <= bounds.high);
   const excluded = total - kept.reduce((sum, row) => sum + row.count, 0);
 
   const start = kept[0].t;
   const end = kept[kept.length - 1].t;
-  const span = end - start;
-  const bucketMinutes = TIMELINE_BUCKETS.find((minutes) => span / (minutes * 60000) <= maxPoints) || TIMELINE_BUCKETS[TIMELINE_BUCKETS.length - 1];
+  const bucketMinutes = bucketFor(end - start, maxPoints);
   const bucketMs = bucketMinutes * 60000;
   const platforms = [...new Set(kept.map((row) => row.platform))].sort();
   const first = Math.floor(start / bucketMs) * bucketMs;
@@ -209,6 +295,8 @@ module.exports = {
   buildStatsFromPosts,
   buildTimeline,
   createGraphBuilder,
+  createTemporalGraphBuilder,
+  TIMELINE_BUCKETS,
   edgeKey,
   extractHashtags,
   extractMentions,

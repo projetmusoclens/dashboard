@@ -126,6 +126,105 @@ Contrôles rapides après un déploiement :
 - `https://dashboard-g3eg.onrender.com/api/collections` → `{"error":"Connexion requise."}`
 - le site Vercel affiche l’écran de connexion, puis le dashboard.
 
+## Serveur OVH (API et base sur le même serveur)
+
+Alternative à Render + Atlas : l’API et MongoDB tournent sur un serveur Ubuntu (VPS OVH, 4 vCPU, 7,6 Go de mémoire), dans Docker. Le frontend reste sur Vercel. Les fichiers sont dans `deploy/ovh/` :
+
+| Fichier | Rôle |
+| --- | --- |
+| `docker-compose.yml` | Trois conteneurs : `mongo` (MongoDB 7, aucun port publié), `api` (Express), `caddy` (HTTPS automatique, seuls ports ouverts : 80 et 443). |
+| `Dockerfile` | Image de l’API : `server/` et ses cinq dépendances (express, mongodb, cors, compression, dotenv) aux versions du `package-lock.json`. |
+| `Caddyfile` | Certificat Let’s Encrypt pour `API_DOMAIN` et relais vers l’API. |
+| `mongo-init.sh` | À la création de la base, crée l’utilisateur de l’API (`readWrite` sur `worldcup2026` seulement). |
+| `.env.example` | Variables à copier dans `deploy/ovh/.env` (secrets, jamais committé). |
+| `backup.sh` / `update.sh` | Sauvegarde quotidienne de la base ; mise à jour de l’API après un push. |
+
+```mermaid
+flowchart LR
+    U[Navigateur] -- "page et JS" --> V[Vercel]
+    U -- "HTTPS /api/*" --> C[Caddy :443]
+    subgraph OVH [Serveur OVH · Docker]
+      C --> A[API Express :5055]
+      A --> M[(MongoDB :27017<br/>réseau interne)]
+    end
+```
+
+Sans nom de domaine, l’adresse `145-239-80-211.sslip.io` pointe d’elle-même vers l’IP du serveur et reçoit un vrai certificat. Avec un domaine (par ex. `api.mondomaine.fr`), créez un enregistrement DNS `A` vers `145.239.80.211` et mettez ce nom dans `API_DOMAIN`.
+
+### 1. Préparer le serveur (une fois)
+
+```bash
+sudo apt update && sudo apt install -y docker.io docker-compose-v2 git
+sudo usermod -aG docker $USER        # puis se déconnecter / reconnecter
+sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw allow 443/udp && sudo ufw --force enable
+```
+
+Le pare-feu n’est qu’une précaution : MongoDB et l’API ne publient aucun port, Docker n’expose que 80 et 443.
+
+### 2. Récupérer le code et remplir `.env`
+
+```bash
+git clone https://github.com/projetmusoclens/dashboard.git ~/dashboard
+cd ~/dashboard/deploy/ovh
+cp .env.example .env
+openssl rand -hex 24   # à lancer deux fois : MONGO_ROOT_PASSWORD et MONGO_APP_PASSWORD
+nano .env
+chmod 600 .env
+```
+
+Le dépôt étant privé, `git clone` demande un identifiant GitHub et un *personal access token* (lecture seule sur ce dépôt), ou utilisez une clé de déploiement SSH. Dans `.env`, reprenez `AUTH_SECRET` de Render pour que personne ne soit déconnecté. Les mots de passe ne doivent contenir que des lettres et des chiffres (ils sont placés dans une URI).
+
+### 3. Démarrer
+
+```bash
+docker compose up -d --build
+docker compose ps                 # mongo « healthy », api et caddy « running »
+docker compose logs -f api        # « MongoDB connected » puis « Backend server listening »
+curl https://145-239-80-211.sslip.io/api/health   # {"ok":true,"database":"worldcup2026"}
+```
+
+Au premier démarrage, la base est vide : l’API indique qu’aucun compte n’existe. C’est normal avant l’étape suivante.
+
+### 4. Copier les données depuis Atlas
+
+Dans Atlas → **Network Access**, autorisez l’IP `145.239.80.211` (si `0.0.0.0/0` n’y est pas déjà). Puis, sur le serveur :
+
+```bash
+cd ~/dashboard/deploy/ovh
+docker run --rm mongo:7.0 mongodump --uri "mongodb+srv://UTILISATEUR:MOTDEPASSE@cluster0.0jkgmb4.mongodb.net/worldcup2026" --archive --gzip > atlas.archive.gz
+set -a; source .env; set +a
+docker compose exec -T mongo mongorestore -u "$MONGO_ROOT_USER" -p "$MONGO_ROOT_PASSWORD" --authenticationDatabase admin \
+  --nsInclude 'worldcup2026.*' --drop --archive --gzip < atlas.archive.gz
+docker compose restart api
+rm atlas.archive.gz
+```
+
+La copie contient les posts, les comptes, les annotations et le cache des profils Bluesky : les identifiants restent les mêmes. Les index sont restaurés avec les données ; ceux qui manqueraient sont créés au démarrage de l’API.
+
+### 5. Basculer le frontend
+
+Sur Vercel, remplacez `REACT_APP_API_BASE_URL` par `https://145-239-80-211.sslip.io` (sans `/` final), puis **Redeploy**. Vérifiez la connexion et les onglets. Gardez Render et Atlas quelques jours le temps de valider, puis arrêtez-les : les annotations saisies entre-temps ne seraient écrites que sur OVH.
+
+### Sauvegardes
+
+`backup.sh` enregistre la base dans `deploy/ovh/backups/` et garde 14 jours. À programmer avec `crontab -e` :
+
+```
+0 3 * * * /home/ubuntu/dashboard/deploy/ovh/backup.sh >> /home/ubuntu/backup.log 2>&1
+```
+
+Les sauvegardes restent sur le serveur : copiez-les régulièrement ailleurs (`scp ubuntu@145.239.80.211:dashboard/deploy/ovh/backups/*.gz .`) ou activez les sauvegardes du VPS chez OVH. Restauration : même commande `mongorestore` que ci-dessus, avec le fichier de sauvegarde.
+
+### Mettre à jour
+
+Après un `git push` sur `main`, Vercel se met à jour seul. Sur le serveur :
+
+```bash
+~/dashboard/deploy/ovh/update.sh
+```
+
+Le script récupère le code, reconstruit l’API et la redémarre (quelques secondes d’interruption). MongoDB et Caddy ne sont pas touchés.
+
 ## Limites connues
 
 - **Mise en veille** : en offre gratuite, Render arrête l’API après environ 15 minutes sans trafic. Le premier appel suivant prend 30 à 60 secondes ; l’écran de connexion l’indique.

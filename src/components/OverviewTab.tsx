@@ -10,7 +10,7 @@ import KpiCard from './KpiCard';
 import { fmtNum } from '../utils/format';
 import { groupLanguages, LanguageSlice } from '../utils/languages';
 
-interface OverviewTabProps { data: DashboardData; selectedCollection?: string; timeline?: TimelineResponse | null }
+interface OverviewTabProps { data: DashboardData; selectedCollections?: string[]; timeline?: TimelineResponse | null }
 
 export const PLATFORM_META: Record<string, { label: string; color: string }> = {
   twitter: { label: 'Twitter', color: '#2a78d6' },
@@ -60,7 +60,7 @@ const LanguageTooltip: React.FC<any> = ({ active, payload, total }) => {
   );
 };
 
-const OverviewTab: React.FC<OverviewTabProps> = ({ data, selectedCollection = '', timeline = null }) => {
+const OverviewTab: React.FC<OverviewTabProps> = ({ data, selectedCollections = [], timeline = null }) => {
   const [typeSlide, setTypeSlide] = useState(0);
   // Seuils du regroupement « Autres » : part minimale d'une langue et nombre maximal de parts.
   const [langMinShare, setLangMinShare] = useState(0.01);
@@ -285,7 +285,8 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, selectedCollection = ''
         </div>
       </div>
 
-      {!selectedCollection && (
+      {/* Comparaison utile dès qu'il y a plusieurs collectes dans la sélection. */}
+      {selectedCollections.length !== 1 && (
         <div style={{ ...cardStyle, marginBottom: '1rem' }}>
           <h3 style={titleStyle}>Statistiques par collecte</h3>
           <div style={{ overflowX: 'auto' }}>

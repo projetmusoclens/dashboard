@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildGraphFromPosts, buildStatsFromPosts, buildTimeline, matchSubgraphPost } = require('./analytics');
+const { buildGraphFromPosts, buildStatsFromPosts, buildTimeline, createTemporalGraphBuilder, matchSubgraphPost } = require('./analytics');
 const { detectPostKind, normalizePost } = require('./normalization');
 const { matchesPostQuery } = require('./query');
 const { postsPage } = require('../routes/posts');
@@ -89,4 +89,37 @@ test('filters posts by a list of ids', () => {
   const post = normalizePost({ platform: 'twitter', post_id: '7', text: '' });
   assert.equal(matchesPostQuery(post, { ids: '1,7, 9' }), true);
   assert.equal(matchesPostQuery(post, { ids: '1,9' }), false);
+});
+
+test('temporal graph keeps per-bucket counts for nodes and edges', () => {
+  const at = (hour, text) => ({ platform: 'twitter', text, timestamp: `2026-07-12T${String(hour).padStart(2, '0')}:10:00.000Z` });
+  const builder = createTemporalGraphBuilder('hashtags');
+  [at(0, '#fra #esp'), at(0, '#fra'), at(3, '#fra #esp'), at(5, '#arg'), { platform: 'twitter', text: '#nodate' }].forEach(builder.add);
+  const graph = builder.result(Infinity, { bucketMinutes: 60 });
+  assert.equal(graph.time.bucket_minutes, 60);
+  assert.equal(graph.time.start, '2026-07-12T00:00:00.000Z');
+  assert.equal(graph.time.buckets, 6);
+  assert.deepEqual(graph.time.volume, [2, 0, 0, 1, 0, 1]);
+  assert.equal(graph.time.excluded, 1);
+  const fra = graph.nodes.find((node) => node.id === '#fra');
+  assert.equal(fra.value, 3);
+  assert.deepEqual(fra.series, [[0, 2], [3, 1]]);
+  assert.deepEqual(graph.links.map((link) => [link.source, link.target, link.value, link.series]), [['#esp', '#fra', 2, [[0, 1], [3, 1]]]]);
+});
+
+test('temporal graph can add the busiest nodes of each bucket', () => {
+  const posts = [];
+  for (let index = 0; index < 5; index += 1) posts.push({ platform: 'twitter', text: '#big', timestamp: '2026-07-12T00:00:00.000Z' });
+  posts.push({ platform: 'twitter', text: '#peak', timestamp: '2026-07-12T02:00:00.000Z' });
+  posts.push({ platform: 'twitter', text: '#other #other2', timestamp: '2026-07-12T00:00:00.000Z' });
+  const run = (peaks) => { const builder = createTemporalGraphBuilder('hashtags'); posts.forEach(builder.add); return builder.result(1, { bucketMinutes: 60, peaks }).nodes.map((node) => node.id); };
+  assert.deepEqual(run(0), ['#big']);
+  assert.deepEqual(run(1).sort(), ['#big', '#peak']);
+});
+
+test('time bounds filter posts to the hour', () => {
+  const post = normalizePost({ platform: 'twitter', text: 'x', timestamp: '2026-07-12T10:30:00.000Z' });
+  assert.equal(matchesPostQuery(post, { startTime: '2026-07-12T10:00:00.000Z', endTime: '2026-07-12T11:00:00.000Z' }), true);
+  assert.equal(matchesPostQuery(post, { startTime: '2026-07-12T11:00:00.000Z' }), false);
+  assert.equal(matchesPostQuery(post, { endTime: '2026-07-12T10:30:00.000Z' }), false);
 });

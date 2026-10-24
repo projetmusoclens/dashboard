@@ -13,6 +13,7 @@ const {
   MONGO_HASHTAG_PATTERN,
   buildTimeline,
   createGraphBuilder,
+  createTemporalGraphBuilder,
   matchSubgraphPost,
   timelineRowsFromPosts,
 } = require('../services/analytics');
@@ -22,14 +23,14 @@ const GRAPH_MAX_NODES = 5000;
 const SUBGRAPH_MAX_NODES = GRAPH_MAX_NODES;
 const SUBGRAPH_DEFAULT_POSTS = 5000;
 const SUBGRAPH_MAX_POSTS = 20000;
-const FILTER_KEYS = ['collectionId', 'platform', 'lang', 'startDate', 'endDate'];
+// startTime / endTime : fenêtre de temps du graphe dynamique (export des posts d'un sous-graphe).
+const FILTER_KEYS = ['collectionId', 'platform', 'lang', 'startDate', 'endDate', 'startTime', 'endTime'];
 const EMOJI_PATTERN = `[${String.fromCodePoint(0x2600)}-${String.fromCodePoint(0x27BF)}]`;
 
 function registerAnalyticsRoutes(app, {
   getDataSource,
   normalizePost,
   buildStatsFromPosts,
-  buildGraphFromPosts,
   buildMatchFromQuery,
   safeHandler,
   profiles,
@@ -106,20 +107,21 @@ function registerAnalyticsRoutes(app, {
     const type = req.query.type === 'mentions' ? 'mentions' : 'hashtags';
     const maxNodes = Math.min(Math.max(Number(req.query.maxNodes) || GRAPH_DEFAULT_NODES, 1), GRAPH_MAX_NODES);
     const minEdgeWeight = Math.max(Number(req.query.minEdgeWeight) || 1, 1);
+    // temporal=1 : séries par tranche de temps pour chaque nœud et arête (graphe dynamique).
+    const temporal = req.query.temporal === '1' || req.query.temporal === 'true';
+    const options = { minEdgeWeight, bucketMinutes: Number(req.query.bucketMinutes) || null, peaks: Math.min(Math.max(Number(req.query.peaks) || 0, 0), 10) };
     const dataSource = getDataSource();
     if (dataSource.mode === 'none') return res.json({ nodes: [], links: [], total_nodes: 0, total_links: 0 });
-    let graph;
+    const builder = temporal ? createTemporalGraphBuilder(type) : createGraphBuilder(type);
     if (dataSource.mode === 'archive') {
-      const posts = dataSource.posts.map(normalizePost).filter((post) => matchesPostQuery(post, req.query));
-      graph = buildGraphFromPosts(posts, type, maxNodes, { minEdgeWeight });
+      dataSource.posts.map(normalizePost).filter((post) => matchesPostQuery(post, req.query)).forEach(builder.add);
     } else {
       const match = buildMatchFromQuery(req.query);
-      const projection = { _id: 0, text: 1, author_handle: 1, platform: 1, 'raw_json.facets': 1 };
+      const projection = { _id: 0, text: 1, author_handle: 1, platform: 1, 'raw_json.facets': 1, ...(temporal ? { timestamp: 1, createdAt: 1, collected_at: 1 } : {}) };
       const cursor = dataSource.db.collection('posts').find(Object.keys(match).length ? match : {}, { projection });
-      const builder = createGraphBuilder(type);
       for await (const post of cursor) builder.add(post);
-      graph = builder.result(maxNodes, { minEdgeWeight });
     }
+    const graph = builder.result(maxNodes, options);
     // Comptes Bluesky : le nœud garde son DID comme identifiant, le libellé devient le pseudo.
     if (type === 'mentions') await profiles.labelGraphNodes(graph.nodes.filter((node) => node.id.startsWith('@did:')));
     return res.json(graph);

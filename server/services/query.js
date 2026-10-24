@@ -46,12 +46,28 @@ function queryIds(query) {
   return [...new Set(query.ids.split(',').map((id) => id.trim()).filter(Boolean))].slice(0, 500);
 }
 
+// Collectes choisies : une seule (?collectionId=a) ou plusieurs séparées par des virgules (?collectionId=a,b).
+function queryCollectionKeys(query) {
+  const values = Array.isArray(query.collectionId) ? query.collectionId : String(query.collectionId || '').split(',');
+  const keys = [...new Set(values.map((value) => String(value).trim()).filter(Boolean).map(collectionKey))];
+  return keys.length ? keys : null;
+}
+
+// Bornes horaires précises (ISO), en plus des dates au jour : startTime inclus, endTime exclu.
+function queryTimeBounds(query) {
+  const parse = (value) => { const time = typeof value === 'string' && value ? Date.parse(value) : NaN; return Number.isFinite(time) ? new Date(time) : null; };
+  const start = parse(query.startTime);
+  const end = parse(query.endTime);
+  return start || end ? { start, end } : null;
+}
+
 function buildMatchFromQuery(query) {
   const conditions = [];
   const ids = queryIds(query);
   if (ids) conditions.push({ post_id: { $in: ids } });
-  if (query.collectionId) {
-    conditions.push({ $expr: { $eq: [mongoCollectionKeyExpression(), collectionKey(query.collectionId)] } });
+  const collectionKeys = queryCollectionKeys(query);
+  if (collectionKeys) {
+    conditions.push({ $expr: { $in: [mongoCollectionKeyExpression(), collectionKeys] } });
   }
   if (query.platform) {
     const platform = String(query.platform).toLowerCase();
@@ -75,6 +91,16 @@ function buildMatchFromQuery(query) {
     conditions.push({ $expr: { $and: comparisons } });
   }
 
+  const bounds = queryTimeBounds(query);
+  if (bounds) {
+    // Même date que la courbe et le graphe temporel : timestamp, puis createdAt, puis collected_at.
+    const dateExpression = { $convert: { input: { $ifNull: ['$timestamp', { $ifNull: ['$createdAt', '$collected_at'] }] }, to: 'date', onError: null, onNull: null } };
+    const comparisons = [];
+    if (bounds.start) comparisons.push({ $gte: [dateExpression, bounds.start] });
+    if (bounds.end) comparisons.push({ $lt: [dateExpression, bounds.end] });
+    conditions.push({ $expr: { $and: comparisons } });
+  }
+
   if (conditions.length === 0) return {};
   if (conditions.length === 1) return conditions[0];
   return { $and: conditions };
@@ -83,7 +109,8 @@ function buildMatchFromQuery(query) {
 function matchesPostQuery(post, query) {
   const ids = queryIds(query);
   if (ids && !ids.includes(String(post.post_id))) return false;
-  if (query.collectionId && collectionKey(post.collection_name) !== collectionKey(query.collectionId)) return false;
+  const collectionKeys = queryCollectionKeys(query);
+  if (collectionKeys && !collectionKeys.includes(collectionKey(post.collection_name))) return false;
   if (query.platform && post.platform !== String(query.platform).toLowerCase()) return false;
   if (query.lang && post.lang !== String(query.lang).toLowerCase()) return false;
   if (query.q && String(query.q).trim()) {
@@ -101,6 +128,9 @@ function matchesPostQuery(post, query) {
     endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
     if (timestamp >= endExclusive) return false;
   }
+  const bounds = queryTimeBounds(query);
+  if (bounds?.start && !(timestamp >= bounds.start)) return false;
+  if (bounds?.end && !(timestamp < bounds.end)) return false;
   return true;
 }
 

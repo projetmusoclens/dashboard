@@ -1,10 +1,12 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Download, ExternalLink, Eye, Heart, MessageCircle, Repeat2, Search, Users, X } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronRight, Download, ExternalLink, Eye, Heart, MessageCircle, PencilLine, Repeat2, Search, Users, X } from 'lucide-react';
 import api from '../services/api';
 import { ConversationDetail, ConversationList, ConversationRoot, ConversationSort, ConversationSummary, Post, QueryParams } from '../types';
 import { fmtNum } from '../utils/format';
 import { downloadFile, fileSlug, toCsv } from '../utils/download';
 import { safeUrl, toRecord } from '../utils/postRecord';
+import { annotationKey } from '../utils/annotations';
+import AnnotationPanel, { useDirectory, useMyAnnotations } from './AnnotationPanel';
 import { platformLabel } from './OverviewTab';
 
 interface ThreadsTabProps {
@@ -82,18 +84,34 @@ const Metrics: React.FC<{ post: Post }> = ({ post }) => (
   </span>
 );
 
-const PostBody: React.FC<{ post: Post; large?: boolean }> = ({ post, large }) => {
+// Même règle que toRecord : un post sans plateforme est un tweet.
+const platformOf = (post: Post) => (post.platform === 'bluesky' ? 'bluesky' : 'twitter');
+const postKey = (post: Post) => annotationKey(platformOf(post), post.post_id);
+
+// Post choisi pour le panneau d'annotation, et nombre de mes annotations par post.
+interface AnnotateContext { targetId: string | null; counts: Record<string, number>; onSelect: (post: Post) => void }
+
+const PostBody: React.FC<{ post: Post; large?: boolean; annotate: AnnotateContext }> = ({ post, large, annotate }) => {
   const record = toRecord(post);
   const avatar = safeUrl(record.author.avatar);
   const images = record.media.filter((media) => media.type === 'image' && safeUrl(media.url)).slice(0, 4);
   return (
-    <div className="threads-post">
+    <div className={`threads-post ${annotate.targetId === post.post_id ? 'annotating' : ''}`}>
       <div className="threads-post-head">
         {avatar ? <img className="threads-avatar" src={avatar} alt="" onError={(event) => { event.currentTarget.style.visibility = 'hidden'; }} /> : <span className="threads-avatar placeholder">{(record.author.name[0] || '?').toUpperCase()}</span>}
         <span className="threads-author" title={record.author.handle}>{record.author.name}</span>
         <span className="threads-handle">{record.author.handle}</span>
         <span className="threads-date">{formatDate(record.createdAt)}</span>
         {record.url && <a className="threads-link" href={record.url} target="_blank" rel="noopener noreferrer" title="Voir l’original"><ExternalLink size={12} /></a>}
+        <button
+          type="button"
+          className={`threads-annotate ${annotate.targetId === post.post_id ? 'active' : ''}`}
+          title="Annoter ce post"
+          aria-pressed={annotate.targetId === post.post_id}
+          onClick={() => annotate.onSelect(post)}
+        >
+          <PencilLine size={11} /> {annotate.counts[postKey(post)] || 'Annoter'}
+        </button>
       </div>
       <div className={`threads-text ${large ? 'large' : ''}`}>{record.text || (record.isRetweet ? 'Republication sans texte' : 'Publication sans texte')}</div>
       {images.length > 0 && (
@@ -106,12 +124,12 @@ const PostBody: React.FC<{ post: Post; large?: boolean }> = ({ post, large }) =>
   );
 };
 
-const TreeItem: React.FC<{ node: TreeNode; highlight: string | null; ancestors: Set<string>; collapsed: Set<string>; onToggle: (id: string) => void }> = ({ node, highlight, ancestors, collapsed, onToggle }) => {
+const TreeItem: React.FC<{ node: TreeNode; highlight: string | null; ancestors: Set<string>; collapsed: Set<string>; onToggle: (id: string) => void; annotate: AnnotateContext }> = ({ node, highlight, ancestors, collapsed, onToggle, annotate }) => {
   const isCollapsed = collapsed.has(node.post.post_id) && !ancestors.has(node.post.post_id);
   const count = node.children.length;
   return (
     <li className={`threads-node ${node.post.post_id === highlight ? 'highlight' : ''} ${ancestors.has(node.post.post_id) ? 'on-path' : ''}`} data-post-id={node.post.post_id}>
-      <PostBody post={node.post} />
+      <PostBody post={node.post} annotate={annotate} />
       {count > 0 && (
         <button type="button" className="threads-toggle" onClick={() => onToggle(node.post.post_id)}>
           {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />} {count} réponse{count > 1 ? 's' : ''}
@@ -119,7 +137,7 @@ const TreeItem: React.FC<{ node: TreeNode; highlight: string | null; ancestors: 
       )}
       {count > 0 && !isCollapsed && (
         <ul className="threads-children">
-          {node.children.map((child) => <TreeItem key={child.post.post_id} node={child} highlight={highlight} ancestors={ancestors} collapsed={collapsed} onToggle={onToggle} />)}
+          {node.children.map((child) => <TreeItem key={child.post.post_id} node={child} highlight={highlight} ancestors={ancestors} collapsed={collapsed} onToggle={onToggle} annotate={annotate} />)}
         </ul>
       )}
     </li>
@@ -167,6 +185,20 @@ const ThreadsTab: React.FC<ThreadsTabProps> = ({ filters, highlightedPost, onCle
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const viewerRef = useRef<HTMLDivElement | null>(null);
 
+  // Annotation : un post de la conversation à la fois, avec le même panneau que l'Explorer.
+  const [toast, setToast] = useState('');
+  const toastRef = useRef<number | undefined>(undefined);
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    window.clearTimeout(toastRef.current);
+    toastRef.current = window.setTimeout(() => setToast(''), 1800);
+  }, []);
+  const { annotations, update: updateMine } = useMyAnnotations(showToast);
+  const directory = useDirectory();
+  const [annotationTarget, setAnnotationTarget] = useState<Post | null>(null);
+  const [annotationOpen, setAnnotationOpen] = useState(false);
+  const annotationCounts = useMemo(() => Object.fromEntries(Object.entries(annotations).map(([key, list]) => [key, list.length])), [annotations]);
+
   useEffect(() => {
     const timer = window.setTimeout(() => setQuery(searchInput.trim()), 400);
     return () => window.clearTimeout(timer);
@@ -211,6 +243,9 @@ const ThreadsTab: React.FC<ThreadsTabProps> = ({ filters, highlightedPost, onCle
       .then((result) => {
         if (cancelled) return;
         setDetail(result);
+        // Le post mis en évidence (venu de l'Explorer) ou, à défaut, le post d'origine s'il a été collecté.
+        const highlighted = result.highlight ? result.posts.find((post) => post.post_id === result.highlight) : undefined;
+        setAnnotationTarget(highlighted || (isMissing(result.root) ? null : result.root));
         // Les grandes conversations s'ouvrent repliées au-delà du premier niveau.
         setCollapsed(result.posts.length > 60 ? new Set(result.posts.filter((post) => post.reply_to_id !== result.root_id).map((post) => post.reply_to_id as string)) : new Set());
       })
@@ -232,6 +267,12 @@ const ThreadsTab: React.FC<ThreadsTabProps> = ({ filters, highlightedPost, onCle
     return next;
   });
   const parentsWithReplies = useMemo(() => new Set((detail?.posts || []).map((post) => post.reply_to_id).filter((id): id is string => Boolean(id) && id !== detail?.root_id)), [detail]);
+
+  const annotate: AnnotateContext = {
+    targetId: annotationTarget?.post_id || null,
+    counts: annotationCounts,
+    onSelect: (post) => { setAnnotationTarget(post); setAnnotationOpen(true); },
+  };
 
   const selectConversation = (item: ConversationSummary) => {
     onClearHighlight?.();
@@ -356,19 +397,40 @@ const ThreadsTab: React.FC<ThreadsTabProps> = ({ filters, highlightedPost, onCle
                     <div className="threads-missing-text">Ce post ne fait pas partie de la collecte ; seules les réponses ci-dessous ont été collectées.</div>
                     {detail.root.url && <a href={detail.root.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={12} /> Voir le post d’origine sur {platformLabel(detail.root.platform)}</a>}
                   </div>
-                ) : <PostBody post={detail.root} large />}
+                ) : <PostBody post={detail.root} large annotate={annotate} />}
               </div>
 
               {tree.roots.length ? (
                 <ul className="threads-children top">
-                  {tree.roots.map((node) => <TreeItem key={node.post.post_id} node={node} highlight={detail.highlight} ancestors={tree.ancestors} collapsed={collapsed} onToggle={toggle} />)}
+                  {tree.roots.map((node) => <TreeItem key={node.post.post_id} node={node} highlight={detail.highlight} ancestors={tree.ancestors} collapsed={collapsed} onToggle={toggle} annotate={annotate} />)}
                 </ul>
               ) : <div className="threads-empty">Aucune réponse collectée pour ce post.</div>}
             </>
           )}
           {!detail && !detailLoading && !detailError && <div className="threads-empty">Sélectionnez une conversation dans la liste.</div>}
         </section>
+
+        <aside className={`explorer-pane explorer-annotation threads-annotation ${annotationOpen ? 'open' : ''}`}>
+          {annotationTarget ? (
+            <div className="threads-annotation-target">
+              <span className="threads-annotation-target-label">Post annoté</span>
+              <strong>{toRecord(annotationTarget).author.name}</strong> · {formatDate(annotationTarget.timestamp)}
+              <div className="threads-annotation-target-text">{annotationTarget.text || 'Publication sans texte'}</div>
+            </div>
+          ) : (
+            <div className="threads-annotation-target">Cliquez sur « Annoter » à côté d’un post de la conversation pour l’annoter.</div>
+          )}
+          <AnnotationPanel
+            target={annotationTarget ? { platform: platformOf(annotationTarget), id: annotationTarget.post_id } : null}
+            mine={annotationTarget ? annotations[postKey(annotationTarget)] || [] : []}
+            onMineChange={updateMine}
+            directory={directory}
+            notify={showToast}
+            headerAction={<button type="button" className="explorer-icon-btn explorer-annotation-close" aria-label="Fermer l’annotation" onClick={() => setAnnotationOpen(false)}><X size={16} /></button>}
+          />
+        </aside>
       </div>
+      <div className={`explorer-toast ${toast ? 'show' : ''}`} role="status">{toast}</div>
     </div>
   );
 };

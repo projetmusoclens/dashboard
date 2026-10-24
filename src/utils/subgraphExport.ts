@@ -1,5 +1,6 @@
-import { SubgraphPost } from '../types';
+import { GraphTime, SubgraphPost, TimeSeries } from '../types';
 import { toCsv } from './download';
+import { activeRuns, bucketStart } from './graphTime';
 
 export interface SubgraphNode {
   id: string;
@@ -31,6 +32,8 @@ export interface SubgraphMeta {
   post_count?: number;
   posts_matched?: number;
   posts_truncated?: boolean;
+  // Fenêtre de temps du graphe dynamique au moment de l'export.
+  time_window?: { start: string; end: string; mode: string };
 }
 
 // Clé d'arête identique à celle du backend (subgraph_edges des posts).
@@ -111,10 +114,33 @@ function hexToRgb(color: string) {
   return { r: Math.round(channel(h + 1 / 3) * 255), g: Math.round(channel(h) * 255), b: Math.round(channel(h - 1 / 3) * 255) };
 }
 
+// Données temporelles d'un export dynamique : séries par nœud et par arête (clé subgraphEdgeId).
+export interface DynamicData {
+  time: GraphTime;
+  nodeSeries: Map<string, TimeSeries>;
+  edgeSeries: Map<string, TimeSeries>;
+}
+
+// Dates GEXF (dateTime, sans millisecondes) : début d'une tranche, et fin une seconde avant la suivante
+// pour que deux tranches consécutives ne se chevauchent pas dans Gephi.
+const gexfTime = (time: number) => new Date(time).toISOString().replace(/\.\d{3}Z$/, 'Z');
+const gexfStart = (time: GraphTime, index: number) => gexfTime(bucketStart(time, index));
+const gexfEnd = (time: GraphTime, index: number) => gexfTime(bucketStart(time, index + 1) - 1000);
+
+// Présence (spells) et valeur par tranche (attvalue datées) : lus par la frise de Gephi.
+function dynamicParts(series: TimeSeries | undefined, time: GraphTime, attribute: string, indent: string) {
+  const values = (series || []).map(([bucket, count]) => `${indent}  <attvalue for="${attribute}" value="${count}" start="${gexfStart(time, bucket)}" end="${gexfEnd(time, bucket)}"/>`);
+  const spells = activeRuns(series).map(([from, to]) => `${indent}  <spell start="${gexfStart(time, from)}" end="${gexfEnd(time, to)}"/>`);
+  return { values, spells: spells.length ? [`${indent}<spells>`, ...spells, `${indent}</spells>`] : [] };
+}
+
 // GEXF 1.3 (Gephi) : nœuds, arêtes pondérées, attributs et positions du layout courant.
-export function subgraphToGexf(nodes: SubgraphNode[], edges: SubgraphEdge[], meta: SubgraphMeta): string {
+// Avec `dynamic`, graphe dynamique : chaque nœud et arête n'existe que sur ses tranches actives,
+// avec le nombre de posts par tranche (attribut « activity » des nœuds, poids des arêtes).
+export function subgraphToGexf(nodes: SubgraphNode[], edges: SubgraphEdge[], meta: SubgraphMeta, dynamic?: DynamicData): string {
   const nodeLines = nodes.map((node) => {
     const { r, g, b } = hexToRgb(node.color);
+    const parts = dynamic ? dynamicParts(dynamic.nodeSeries.get(node.id), dynamic.time, 'activity', '        ') : null;
     return [
       `      <node id="${xml(node.id)}" label="${xml(node.label)}">`,
       '        <attvalues>',
@@ -122,28 +148,43 @@ export function subgraphToGexf(nodes: SubgraphNode[], edges: SubgraphEdge[], met
       `          <attvalue for="frequency" value="${node.frequency}"/>`,
       `          <attvalue for="degree_in_graph" value="${node.degree_in_graph}"/>`,
       `          <attvalue for="community" value="${node.community ?? ''}"/>`,
+      ...(parts?.values || []),
       '        </attvalues>',
+      ...(parts?.spells || []),
       `        <viz:position x="${node.x.toFixed(3)}" y="${node.y.toFixed(3)}" z="0"/>`,
       `        <viz:color r="${r}" g="${g}" b="${b}"/>`,
       `        <viz:size value="${Math.max(1, Math.sqrt(node.frequency))}"/>`,
       '      </node>',
     ].join('\n');
   });
-  const edgeLines = edges.map((edge, index) => `      <edge id="${index}" source="${xml(edge.source)}" target="${xml(edge.target)}" weight="${edge.weight}"/>`);
+  const edgeLines = edges.map((edge, index) => {
+    const open = `      <edge id="${index}" source="${xml(edge.source)}" target="${xml(edge.target)}" weight="${edge.weight}"`;
+    if (!dynamic) return `${open}/>`;
+    const parts = dynamicParts(dynamic.edgeSeries.get(edge.id), dynamic.time, 'weight', '        ');
+    return [`${open}>`, '        <attvalues>', ...parts.values, '        </attvalues>', ...parts.spells, '      </edge>'].join('\n');
+  });
+  const window = meta.time_window ? ` · fenêtre ${meta.time_window.start} → ${meta.time_window.end}` : '';
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<gexf xmlns="http://gexf.net/1.3" xmlns:viz="http://gexf.net/1.3/viz" version="1.3">',
     `  <meta lastmodifieddate="${meta.generated_at.slice(0, 10)}">`,
     '    <creator>Heimdall dashboard</creator>',
-    `    <description>${xml(`Sous-graphe ${meta.graph_type} · layout ${meta.layout} · filtres ${JSON.stringify(meta.filters)}`)}</description>`,
+    `    <description>${xml(`Sous-graphe ${meta.graph_type} · layout ${meta.layout} · filtres ${JSON.stringify(meta.filters)}${window}`)}</description>`,
     '  </meta>',
-    '  <graph mode="static" defaultedgetype="undirected">',
+    dynamic
+      ? '  <graph mode="dynamic" defaultedgetype="undirected" timeformat="dateTime" timerepresentation="interval">'
+      : '  <graph mode="static" defaultedgetype="undirected">',
     '    <attributes class="node">',
     '      <attribute id="type" title="type" type="string"/>',
     '      <attribute id="frequency" title="frequency" type="integer"/>',
     '      <attribute id="degree_in_graph" title="degree_in_graph" type="integer"/>',
     '      <attribute id="community" title="community" type="string"/>',
     '    </attributes>',
+    ...(dynamic ? [
+      '    <attributes class="node" mode="dynamic">',
+      '      <attribute id="activity" title="posts_per_bucket" type="integer"/>',
+      '    </attributes>',
+    ] : []),
     '    <nodes>',
     ...nodeLines,
     '    </nodes>',

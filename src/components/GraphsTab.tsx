@@ -12,7 +12,9 @@ import {
   bfsDistances, computeLayout, DEFAULT_LAYOUT_PARAMS, detectCommunities, LARGE_GRAPH_NODES, LAYOUT_PARAM_KEYS, LAYOUTS,
   LayoutId, LayoutParams, layoutUsesFocus, runBackgroundLayout, usesBackgroundLayout,
 } from '../utils/graphLayouts';
-import { buildSubgraph, edgesToCsv, nodesToCsv, postsToCsv, SubgraphMeta, subgraphToGexf } from '../utils/subgraphExport';
+import { buildSubgraph, DynamicData, edgesToCsv, nodesToCsv, postsToCsv, subgraphEdgeId, SubgraphMeta, subgraphToGexf } from '../utils/subgraphExport';
+import { formatDuration, formatWindow, TimeMode, windowBounds, windowFor, windowSizeOptions, windowSum } from '../utils/graphTime';
+import GraphTimeBar, { NodeSparkline } from './GraphTimeBar';
 import { downloadFile, fileSlug } from '../utils/download';
 
 interface GraphsTabProps {
@@ -59,6 +61,9 @@ const edgeSizeForWeight = (w: number | undefined) => {
   const size = Math.log(v + 1) * 1.8;
   return Math.max(0.6, Math.min(10, size));
 };
+
+// Tailles de tranche proposées pour le graphe dynamique (0 : automatique selon la période).
+const BUCKET_CHOICES: [number, string][] = [[0, 'Auto'], [60, '1 h'], [180, '3 h'], [360, '6 h'], [1440, '1 jour']];
 
 const paramsKey = (layout: LayoutId, params: LayoutParams) => JSON.stringify(LAYOUT_PARAM_KEYS[layout].map((key) => params[key]));
 const layoutKey = (layout: LayoutId, params: LayoutParams, focus: string | null) => `${layout}|${paramsKey(layout, params)}|${layoutUsesFocus(layout) ? focus : ''}`;
@@ -116,6 +121,21 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
   const [isolate, setIsolate] = useState(false);
   const [includeRaw, setIncludeRaw] = useState(false);
   const [exportState, setExportState] = useState<{ busy: boolean; message: string; error: boolean }>({ busy: false, message: '', error: false });
+  // Graphe dynamique : séries par tranche de temps chargées une fois, puis parcourues dans le navigateur.
+  // La disposition est calculée sur toute la période : les nœuds gardent leur place d'une fenêtre à l'autre.
+  const [temporal, setTemporal] = useState(false);
+  const [bucketChoice, setBucketChoice] = useState(0);
+  const [withPeaks, setWithPeaks] = useState(false);
+  const [timeMode, setTimeMode] = useState<TimeMode>('cumulative');
+  const [windowSize, setWindowSize] = useState(1);
+  const [timePosition, setTimePosition] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const [hideInactive, setHideInactive] = useState(false);
+  const [limitPostsToWindow, setLimitPostsToWindow] = useState(true);
+  const [timeStats, setTimeStats] = useState({ nodes: 0, edges: 0, posts: 0 });
+  // Activité de la fenêtre courante, lue par les reducers Sigma (comme visualRef).
+  const timeRef = useRef<{ nodes: Map<string, number>; edges: Map<string, number>; max: number; hide: boolean } | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Plein écran du graphe seul (sans réglages ni panneau latéral) : API du navigateur,
   // ou plein fenêtre en CSS quand elle n'est pas disponible.
@@ -144,13 +164,14 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
   // Chargement du graphe à l'ouverture de l'onglet : seulement le type affiché et le nombre de nœuds demandé.
   const filtersKey = JSON.stringify(filters);
   useEffect(() => {
-    const key = `${activeGraph}|${filtersKey}|${nodeLimit}|${minEdgeWeight}`;
+    const temporalParams = temporal ? { temporal: 1 as const, ...(bucketChoice ? { bucketMinutes: bucketChoice } : {}), ...(withPeaks ? { peaks: 3 } : {}) } : {};
+    const key = `${activeGraph}|${filtersKey}|${nodeLimit}|${minEdgeWeight}|${JSON.stringify(temporalParams)}`;
     const hit = cacheRef.current.get(key);
     if (hit) { setGraphData(hit); setLoadError(null); return undefined; }
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
-    api.getGraph(activeGraph, { ...(JSON.parse(filtersKey) as QueryParams), maxNodes: nodeLimit, minEdgeWeight })
+    api.getGraph(activeGraph, { ...(JSON.parse(filtersKey) as QueryParams), maxNodes: nodeLimit, minEdgeWeight, ...temporalParams })
       .then((result) => {
         if (cancelled) return;
         cacheRef.current.set(key, result);
@@ -160,7 +181,19 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
       .catch((error) => { if (!cancelled) setLoadError(error.message || String(error)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [activeGraph, filtersKey, nodeLimit, minEdgeWeight]);
+  }, [activeGraph, filtersKey, nodeLimit, minEdgeWeight, temporal, bucketChoice, withPeaks]);
+
+  const time = temporal && graphData?.time?.start && graphData.time.buckets ? graphData.time : null;
+  const windowSizes = useMemo(() => (time ? windowSizeOptions(time.bucket_minutes) : [1]), [time]);
+  const timeWindow = useMemo(() => (time ? windowFor(timeMode, Math.min(timePosition, time.buckets - 1), windowSize) : null), [time, timeMode, timePosition, windowSize]);
+
+  // Nouveau graphe dynamique : toute la période est affichée, fenêtre glissante d'environ 6 h par défaut.
+  useEffect(() => {
+    setPlaying(false);
+    if (!time) return;
+    setTimePosition(time.buckets - 1);
+    setWindowSize(windowSizes.find((size) => size * time.bucket_minutes >= 360) || windowSizes[windowSizes.length - 1]);
+  }, [time, windowSizes]);
 
   // Nœuds affichés : ceux du graphe chargé (les plus fréquents) au-dessus de la valeur minimale.
   const filteredGraph = useMemo(() => {
@@ -208,13 +241,13 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
     filteredGraph.nodes.forEach((n) => {
       // `type` est le type de rendu Sigma ; le rôle sémantique est gardé dans `role`.
       const baseSize = Math.max(3, Math.min(18, 2 + Math.sqrt(n.value) * 1.4));
-      graph.mergeNode(n.id, { label: n.label || n.id, value: n.value, size: baseSize, color: n.color, baseColor: n.color, type: 'circle', role: activeGraph === 'mentions' ? 'compte' : 'hashtag' });
+      graph.mergeNode(n.id, { label: n.label || n.id, value: n.value, size: baseSize, color: n.color, baseColor: n.color, type: 'circle', role: activeGraph === 'mentions' ? 'compte' : 'hashtag', series: n.series });
     });
     filteredGraph.links.forEach((l) => {
       if (l.source === l.target || !graph.hasNode(l.source) || !graph.hasNode(l.target)) return;
       const existing = graph.edge(l.source, l.target);
       if (existing) graph.updateEdgeAttribute(existing, 'weight', (weight: number) => (weight || 0) + l.value);
-      else graph.addEdge(l.source, l.target, { weight: l.value });
+      else graph.addEdge(l.source, l.target, { weight: l.value, series: l.series });
     });
     graph.forEachEdge((edge: string, attributes: any) => graph.setEdgeAttribute(edge, 'size', edgeSizeForWeight(attributes.weight)));
     const communities = detectCommunities(graph, appliedParams.resolution);
@@ -244,6 +277,19 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
       const result: any = { ...data };
       if (state.colorByCommunity) result.color = CHART_COLORS[(Number(data.community) || 0) % CHART_COLORS.length];
       const isSelected = state.selected.has(node);
+      // Graphe dynamique : taille selon l'activité dans la fenêtre, nœuds inactifs estompés ou masqués.
+      const time = timeRef.current;
+      if (time) {
+        const activity = time.nodes.get(node) || 0;
+        if (!activity) {
+          if (time.hide && !isSelected && node !== state.focus) return { ...result, hidden: true };
+          result.color = FADED_NODE_COLOR;
+          result.label = '';
+          result.size = 2;
+        } else {
+          result.size = 3 + 15 * Math.sqrt(activity / time.max);
+        }
+      }
       if (state.isolate && state.selected.size && !isSelected) return { ...result, hidden: true };
       const hasContext = Boolean(state.focus) || state.selected.size > 0;
       if (isSelected) {
@@ -254,7 +300,7 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
       if (node === state.focus) {
         result.highlighted = true;
         result.forceLabel = true;
-        result.size = (data.size || 4) * 1.4;
+        result.size = (result.size || 4) * 1.4;
         result.zIndex = 3;
       } else if (hasContext && !isSelected && !state.neighborhood.has(node)) {
         result.color = FADED_NODE_COLOR;
@@ -265,9 +311,14 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
       }
       return result;
     };
-    const edgeReducer = (edge: string, data: any) => {
+    const edgeReducer = (edge: string, attributes: any) => {
       const state = visualRef.current;
-      if (!state.showEdges) return { ...data, hidden: true };
+      if (!state.showEdges) return { ...attributes, hidden: true };
+      // Graphe dynamique : seules les arêtes actives dans la fenêtre, épaisseur selon leur poids dans la fenêtre.
+      const time = timeRef.current;
+      const weight = time ? time.edges.get(edge) || 0 : 0;
+      if (time && !weight) return { ...attributes, hidden: true };
+      const data = time ? { ...attributes, size: edgeSizeForWeight(weight) } : attributes;
       const [source, target] = graph.extremities(edge);
       const bothSelected = state.selected.has(source) && state.selected.has(target);
       if (state.isolate && state.selected.size && !bothSelected) return { ...data, hidden: true };
@@ -386,6 +437,55 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
     sigmaRef.current?.refresh();
   }, [focusNode, selected, neighborhoodIds, showEdges, isolate, colorByCommunity]);
 
+  // Fenêtre de temps modifiée : activité de chaque nœud et arête, puis nouveau rendu (sans toucher à la disposition).
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph || !time || !timeWindow) {
+      timeRef.current = null;
+      sigmaRef.current?.refresh();
+      return;
+    }
+    const { from, to } = timeWindow;
+    const nodes = new Map<string, number>();
+    const edges = new Map<string, number>();
+    let max = 0;
+    graph.forEachNode((node: string, attributes: any) => {
+      const activity = windowSum(attributes.series, from, to);
+      if (!activity) return;
+      nodes.set(node, activity);
+      if (activity > max) max = activity;
+    });
+    graph.forEachEdge((edge: string, attributes: any) => {
+      const weight = windowSum(attributes.series, from, to);
+      if (weight) edges.set(edge, weight);
+    });
+    timeRef.current = { nodes, edges, max: max || 1, hide: hideInactive };
+    let posts = 0;
+    for (let index = from; index <= to; index += 1) posts += time.volume[index] || 0;
+    setTimeStats({ nodes: nodes.size, edges: edges.size, posts });
+    sigmaRef.current?.refresh();
+    // graphVersion signale la reconstruction du graphe (graphRef ne déclenche pas de rendu).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graphVersion, time, timeWindow?.from, timeWindow?.to, hideInactive]);
+
+  // Lecture : la fenêtre avance d'une tranche à intervalle régulier, jusqu'à la fin de la période.
+  useEffect(() => {
+    if (!playing || !time) return undefined;
+    const timer = window.setInterval(() => setTimePosition((position) => Math.min(position + 1, time.buckets - 1)), 600 / speed);
+    return () => window.clearInterval(timer);
+  }, [playing, speed, time]);
+  useEffect(() => {
+    if (playing && time && timePosition >= time.buckets - 1) setPlaying(false);
+  }, [playing, time, timePosition]);
+
+  const firstPosition = () => (time ? (timeMode === 'sliding' ? Math.min(windowSize - 1, time.buckets - 1) : 0) : 0);
+  const restartTime = () => { setPlaying(false); setTimePosition(firstPosition()); };
+  const togglePlay = () => {
+    if (!time) return;
+    if (!playing && timePosition >= time.buckets - 1) setTimePosition(firstPosition());
+    setPlaying(!playing);
+  };
+
   useEffect(() => () => stopLayoutRef.current?.(), []);
 
   useEffect(() => {
@@ -487,31 +587,49 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
     filters: Object.fromEntries(Object.entries(filters).filter(([, value]) => typeof value === 'string' && value)) as Record<string, string>,
     node_count: nodeCount,
     edge_count: edgeCount,
+    ...(time && timeWindow ? (() => {
+      const bounds = windowBounds(time, timeWindow);
+      return { time_window: { start: bounds.startTime, end: bounds.endTime, mode: timeMode === 'sliding' ? `fenêtre glissante de ${formatDuration(windowSize * time.bucket_minutes)}` : 'cumulé' } };
+    })() : {}),
   });
 
-  // Graphe affiché en entier, au format GEXF (Gephi).
-  const exportDisplayedGraph = () => {
+  // Séries par nœud et par arête du graphe affiché, pour le GEXF dynamique.
+  const dynamicData = (graph: any): DynamicData | undefined => {
+    if (!time) return undefined;
+    const nodeSeries = new Map();
+    const edgeSeries = new Map();
+    graph.forEachNode((node: string, attributes: any) => nodeSeries.set(node, attributes.series || []));
+    graph.forEachEdge((_edge: string, attributes: any, source: string, target: string) => edgeSeries.set(subgraphEdgeId(source, target), attributes.series || []));
+    return { time, nodeSeries, edgeSeries };
+  };
+
+  // Graphe affiché en entier, au format GEXF (Gephi) ; dynamique : toute la période, avec la frise de Gephi.
+  const exportDisplayedGraph = (dynamic = false) => {
     const graph = graphRef.current;
     if (!graph?.order) return;
     const { nodes, edges } = buildSubgraph(graph, graph.nodes());
     const meta = exportMeta(nodes.length, edges.length);
-    downloadFile(subgraphToGexf(nodes, edges, meta), `graphe_${activeGraph}_${meta.generated_at.slice(0, 10)}.gexf`, 'application/xml;charset=utf-8');
+    const data = dynamic ? dynamicData(graph) : undefined;
+    downloadFile(subgraphToGexf(nodes, edges, data ? { ...meta, time_window: undefined } : meta, data), `graphe_${activeGraph}${data ? '_dynamique' : ''}_${meta.generated_at.slice(0, 10)}.gexf`, 'application/xml;charset=utf-8');
   };
 
-  const exportSubgraph = async (format: 'json' | 'csv' | 'gexf') => {
+  const exportSubgraph = async (format: 'json' | 'csv' | 'gexf' | 'gexf-dynamic') => {
     const graph = graphRef.current;
     if (!graph || !selected.size) return;
     const { nodes, edges } = buildSubgraph(graph, selected);
     const meta = exportMeta(nodes.length, edges.length);
     const base = `sous-graphe_${activeGraph}_${fileSlug(labelOf(focusNode || nodes[0].id))}_${meta.generated_at.slice(0, 10)}`;
-    if (format === 'gexf') {
-      downloadFile(subgraphToGexf(nodes, edges, meta), `${base}.gexf`, 'application/xml;charset=utf-8');
-      setExportState({ busy: false, message: `GEXF exporté : ${nodes.length} nœuds, ${edges.length} arêtes.`, error: false });
+    if (format === 'gexf' || format === 'gexf-dynamic') {
+      const data = format === 'gexf-dynamic' ? dynamicData(graph) : undefined;
+      downloadFile(subgraphToGexf(nodes, edges, data ? { ...meta, time_window: undefined } : meta, data), `${base}${data ? '_dynamique' : ''}.gexf`, 'application/xml;charset=utf-8');
+      setExportState({ busy: false, message: `GEXF${data ? ' dynamique' : ''} exporté : ${nodes.length} nœuds, ${edges.length} arêtes.`, error: false });
       return;
     }
     setExportState({ busy: true, message: 'Récupération des posts liés au sous-graphe…', error: false });
     try {
-      const response = await api.getSubgraphPosts(activeGraph, nodes.map((node) => node.id), { ...filters, includeRaw, limit: SUBGRAPH_POST_LIMIT });
+      // Graphe dynamique : posts de la fenêtre affichée seulement, si la case est cochée.
+      const windowFilter = time && timeWindow && limitPostsToWindow ? windowBounds(time, timeWindow) : {};
+      const response = await api.getSubgraphPosts(activeGraph, nodes.map((node) => node.id), { ...filters, ...windowFilter, includeRaw, limit: SUBGRAPH_POST_LIMIT });
       const fullMeta = { ...meta, post_count: response.posts.length, posts_matched: response.matched, posts_truncated: response.truncated };
       if (format === 'json') {
         downloadFile(JSON.stringify({ meta: fullMeta, nodes, edges, posts: response.posts }, null, 2), `${base}.json`, 'application/json;charset=utf-8');
@@ -550,12 +668,36 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
         </button>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 6, flexWrap: 'wrap' }}>
           <label htmlFor="graph-node-limit" style={{ fontSize: 12, color: 'var(--text-muted)' }} title="Les nœuds les plus fréquents sont gardés">Nœuds :</label>
-          <input id="graph-node-limit" type="number" min={10} max={GRAPH_MAX_NODES} step={50} value={nodeLimitInput} onChange={(e) => setNodeLimitInput(Number(e.target.value))} style={{ ...inputStyle, width: 90 }} />
+          <input id="graph-node-limit" type="number" min={10} max={GRAPH_MAX_NODES} step={1} value={nodeLimitInput} onChange={(e) => setNodeLimitInput(Number(e.target.value))} style={{ ...inputStyle, width: 90 }} />
           <label htmlFor="graph-min-value" style={{ fontSize: 12, color: 'var(--text-muted)' }} title="Fréquence minimale d’un nœud">Fréq. min. :</label>
           <input id="graph-min-value" type="number" min={1} value={minNodeValue} onChange={(e) => setMinNodeValue(Math.max(1, Number(e.target.value) || 1))} style={{ ...inputStyle, width: 70 }} />
           <label htmlFor="graph-min-edge" style={{ fontSize: 12, color: 'var(--text-muted)' }} title="Nombre minimal de posts pour garder une arête">Poids min. des arêtes :</label>
           <input id="graph-min-edge" type="number" min={1} value={minEdgeInput} onChange={(e) => setMinEdgeInput(Number(e.target.value))} style={{ ...inputStyle, width: 70 }} />
         </div>
+      </div>
+
+      <div style={{ ...cardStyle, padding: '10px 14px', display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)' }}>
+          <input type="checkbox" checked={temporal} onChange={(event) => setTemporal(event.target.checked)} /> Évolution dans le temps
+        </label>
+        {temporal && (
+          <>
+            <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--text-secondary)' }}>
+              Tranches :
+              <select value={bucketChoice} onChange={(event) => setBucketChoice(Number(event.target.value))} style={{ ...inputStyle, fontSize: 12 }}>
+                {BUCKET_CHOICES.map(([value, label]) => <option key={value} value={value}>{label}{value === 0 && time && !bucketChoice ? ` (${formatDuration(time.bucket_minutes)})` : ''}</option>)}
+              </select>
+            </label>
+            <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--text-secondary)' }} title="Ajoute les 3 nœuds les plus fréquents de chaque tranche, même s’ils ne font pas partie des plus fréquents sur toute la période">
+              <input type="checkbox" checked={withPeaks} onChange={(event) => setWithPeaks(event.target.checked)} /> Inclure les pics de chaque tranche
+            </label>
+          </>
+        )}
+        <span style={{ flexBasis: '100%', fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          {temporal
+            ? <>La frise sous le graphe parcourt la période : « Cumulé » montre le réseau qui se construit, « Fenêtre glissante » seulement l’activité de la fenêtre. La disposition est calculée sur toute la période, les nœuds gardent donc leur place. Date retenue : publication du post.{time?.excluded ? ` ${fmtNum(time.excluded)} post(s) sans date ou aux dates aberrantes sont écartés.` : ''}</>
+            : <>Cochez « Évolution dans le temps » pour faire défiler le graphe dans le temps (lecture animée, fenêtre glissante, export GEXF dynamique pour Gephi).</>}
+        </span>
       </div>
 
       <div style={{ ...cardStyle, padding: '10px 14px', display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -621,6 +763,27 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
           {!loading && graphData && filteredGraph.nodes.length === 0 && (
             <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Aucun nœud pour ces filtres.</div>
           )}
+          {time && timeWindow && (
+            <GraphTimeBar
+              time={time}
+              window={timeWindow}
+              position={Math.min(timePosition, time.buckets - 1)}
+              onPosition={(position) => { setPlaying(false); setTimePosition(position); }}
+              mode={timeMode}
+              onMode={setTimeMode}
+              windowSize={windowSize}
+              windowSizes={windowSizes}
+              onWindowSize={setWindowSize}
+              playing={playing}
+              onTogglePlay={togglePlay}
+              onRestart={restartTime}
+              speed={speed}
+              onSpeed={setSpeed}
+              hideInactive={hideInactive}
+              onHideInactive={setHideInactive}
+              stats={timeStats}
+            />
+          )}
           {selected.size > 0 && (
             <div style={{ position: 'absolute', left: 12, bottom: 12, fontSize: 12, padding: '6px 10px', borderRadius: 999, background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow)', color: 'var(--text-secondary)' }}>
               <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 999, background: SELECTED_COLOR, marginRight: 6 }} />
@@ -638,6 +801,12 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
                 {focusInfo.label !== focusNode && <div style={{ color: 'var(--text-muted)', fontSize: 11, overflowWrap: 'anywhere' }}>{focusNode}</div>}
                 <div style={{ color: 'var(--text-muted)' }}>Type : {activeGraph === 'mentions' ? 'compte' : 'hashtag'}</div>
                 <div>Fréquence : {fmtNum(focusInfo.value)}</div>
+                {time && timeWindow && (
+                  <div>
+                    Dans la fenêtre : {fmtNum(windowSum(graphRef.current?.getNodeAttribute(focusNode, 'series'), timeWindow.from, timeWindow.to))} post(s)
+                    <NodeSparkline series={graphRef.current?.getNodeAttribute(focusNode, 'series')} buckets={time.buckets} window={timeWindow} />
+                  </div>
+                )}
                 <div>Degré : {focusInfo.degree}</div>
                 <div>Voisins directs : {directCount}</div>
                 <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -719,10 +888,16 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
                   <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--text-secondary)' }}>
                     <input type="checkbox" checked={includeRaw} onChange={(event) => setIncludeRaw(event.target.checked)} /> Inclure les données brutes des posts (raw_json)
                   </label>
+                  {time && timeWindow && (
+                    <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--text-secondary)' }}>
+                      <input type="checkbox" checked={limitPostsToWindow} onChange={(event) => setLimitPostsToWindow(event.target.checked)} /> Posts de la fenêtre seulement ({formatWindow(time, timeWindow)})
+                    </label>
+                  )}
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <button type="button" disabled={exportState.busy} style={{ ...smallButton, background: 'var(--accent)', borderColor: 'var(--accent)', color: '#fff' }} onClick={() => exportSubgraph('json')}>JSON complet</button>
                     <button type="button" disabled={exportState.busy} style={smallButton} onClick={() => exportSubgraph('csv')}>CSV (nœuds, arêtes, posts)</button>
                     <button type="button" disabled={exportState.busy} style={smallButton} onClick={() => exportSubgraph('gexf')}>GEXF (Gephi)</button>
+                    {time && <button type="button" disabled={exportState.busy} style={smallButton} onClick={() => exportSubgraph('gexf-dynamic')} title="Toute la période, avec la frise de Gephi">GEXF dynamique</button>}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
                     JSON et CSV incluent les posts contenant au moins un nœud sélectionné (champs <code>subgraph_nodes</code> / <code>subgraph_edges</code>), avec les filtres actifs. GEXF : graphe seul.
@@ -755,8 +930,10 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
             <div>{activeGraph === 'mentions' ? 'Vue mentions / comptes' : 'Vue hashtags'} · {layoutInfo?.label}</div>
             {focusNode && <div style={{ color: '#2a78d6' }}>Exploration de voisinage active</div>}
             <div>
-              <button type="button" style={smallButton} disabled={!filteredGraph.nodes.length} onClick={exportDisplayedGraph}>Exporter le graphe affiché (GEXF)</button>
+              <button type="button" style={smallButton} disabled={!filteredGraph.nodes.length} onClick={() => exportDisplayedGraph()}>Exporter le graphe affiché (GEXF)</button>
+              {time && <button type="button" style={{ ...smallButton, marginLeft: 6 }} disabled={!filteredGraph.nodes.length} onClick={() => exportDisplayedGraph(true)} title="Toute la période : chaque nœud et lien n’existe que sur ses tranches actives (frise de Gephi)">GEXF dynamique</button>}
             </div>
+            {time && <div>Graphe dynamique : {fmtNum(time.buckets)} tranches de {formatDuration(time.bucket_minutes)}</div>}
           </div>
         </div>
       </div>
