@@ -12,26 +12,6 @@ function collectionKey(value) {
   return normalizeCollectionName(value).toLowerCase();
 }
 
-function mongoCollectionNameExpression() {
-  const trimmed = {
-    $trim: {
-      input: {
-        $convert: {
-          input: '$collection_context.collection_name',
-          to: 'string',
-          onError: '',
-          onNull: '',
-        },
-      },
-    },
-  };
-  return { $cond: [{ $eq: [trimmed, ''] }, 'Collecte inconnue', trimmed] };
-}
-
-function mongoCollectionKeyExpression() {
-  return { $toLower: mongoCollectionNameExpression() };
-}
-
 function groupCollections(posts) {
   const groups = new Map();
 
@@ -57,7 +37,5 @@ module.exports = {
   collectionKey,
   eventName,
   groupCollections,
-  mongoCollectionKeyExpression,
-  mongoCollectionNameExpression,
   normalizeCollectionName,
 };

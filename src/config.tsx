@@ -15,4 +15,6 @@ export const TABS: { id: TabId; label: string; icon: React.ReactNode; adminOnly?
 
 // Graphes : nœuds affichés par défaut et plafond (aligné sur GRAPH_MAX_NODES côté serveur).
 export const GRAPH_DEFAULT_NODES = 300;
-export const GRAPH_MAX_NODES = 5000;
+export const GRAPH_MAX_NODES = 20000;
+// Au-delà, l'affichage et les dispositions ralentissent nettement : l'onglet Graphes prévient.
+export const GRAPH_WARN_NODES = 5000;

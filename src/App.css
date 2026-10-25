@@ -505,6 +505,10 @@ body {
 .threads-metrics { display: flex; gap: 12px; margin-left: 31px; font-size: 11px; color: var(--text-muted); }
 .threads-metrics span { display: inline-flex; align-items: center; gap: 3px; }
 .threads-toggle { display: inline-flex; align-items: center; gap: 3px; margin: 2px 0 0 38px; border: 0; background: transparent; color: #2a78d6; font-size: 12px; font-weight: 600; cursor: pointer; }
+.threads-more-replies { margin: 4px 0 6px 10px; border: 1px dashed var(--accent); background: var(--accent-dim); color: var(--accent); border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
+.threads-more-replies:disabled { opacity: 0.6; cursor: default; }
+.threads-partial { color: #8a5a00; background: rgba(229, 160, 13, 0.14); border-radius: 999px; padding: 1px 8px; }
+.threads-export-raw { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); }
 /* Panneau d'annotation de Threads (mêmes styles que celui de l'Explorer) */
 .threads-annotate { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; border: 1px solid var(--border); background: transparent; color: var(--text-muted); border-radius: 999px; padding: 2px 8px; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
 .threads-annotate:hover { color: var(--accent); border-color: var(--accent); }

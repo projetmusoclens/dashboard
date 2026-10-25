@@ -357,11 +357,11 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, timeline = null, collec
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
           <div>
             <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
-              Hashtags détectés · top {topHashtags.length} par nombre d’occurrences
+              Hashtags détectés · top {topHashtags.length} par nombre de posts
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
               {topHashtags.length > 0 ? topHashtags.map(([tag, count]) => (
-                <span key={tag} title={`${fmtNum(count)} occurrences dans le texte`} style={{ background: 'rgba(29,158,117,0.12)', color: '#1d9e75', padding: '0.35rem 0.65rem', borderRadius: 999, fontSize: 12 }}>
+                <span key={tag} title={`${fmtNum(count)} posts contenant ce hashtag`} style={{ background: 'rgba(29,158,117,0.12)', color: '#1d9e75', padding: '0.35rem 0.65rem', borderRadius: 999, fontSize: 12 }}>
                   {tag.startsWith('#') ? tag : `#${tag}`} <span style={{ opacity: 0.7 }}>{fmtNum(count)}</span>
                 </span>
               )) : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>Aucun hashtag détecté</span>}
@@ -378,7 +378,7 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, timeline = null, collec
                 return (
                   <span
                     key={keyword}
-                    title={`${fmtNum(count)} posts collectés · ${asHashtag ? `#${keyword} : ${fmtNum(asHashtag)} occurrences en hashtag` : 'absent des hashtags les plus fréquents'}`}
+                    title={`${fmtNum(count)} posts collectés · ${asHashtag ? `#${keyword} : ${fmtNum(asHashtag)} posts avec ce hashtag` : 'absent des hashtags les plus fréquents'}`}
                     style={{ background: 'rgba(42,120,214,0.12)', color: '#2a78d6', padding: '0.35rem 0.65rem', borderRadius: 999, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}
                   >
                     {inTop && <span aria-label="aussi dans le top des hashtags" style={{ width: 6, height: 6, borderRadius: 999, background: '#1d9e75' }} />}
@@ -390,7 +390,7 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, timeline = null, collec
             {topParameterKeywords.length > 0 && (
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
                 <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: 999, background: '#1d9e75', marginRight: 5 }} />
-                présent aussi dans le top des hashtags · survolez un mot-clé pour son nombre d’occurrences en hashtag
+                présent aussi dans le top des hashtags · survolez un mot-clé pour le nombre de posts qui l’emploient en hashtag
               </div>
             )}
           </div>

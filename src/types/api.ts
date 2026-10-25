@@ -156,7 +156,8 @@ export interface GraphResponse {
   links: { source: string; target: string; value: number; series?: TimeSeries }[];
   // Volume avant plafonnement : nombre total de nœuds et d'arêtes pour ces filtres.
   total_nodes?: number;
-  total_links?: number;
+  // null : non calculé (gros corpus : seules les relations entre les nœuds affichés sont comptées).
+  total_links?: number | null;
   time?: GraphTime;
 }
 
@@ -207,7 +208,22 @@ export interface ConversationDetail {
   root_id: string;
   root_missing: boolean;
   root: ConversationRoot;
+  // Posts affichés : les premiers niveaux (5 000 au plus) et le chemin vers le post mis en évidence.
   posts: Post[];
   truncated: boolean;
   highlight: string | null;
+  // Réponses directes non chargées, par post ; chargées ensuite branche par branche.
+  pending?: Record<string, number>;
+  // Nombre total de réponses de la conversation.
+  total_posts?: number;
+  // Résumé calculé sur toute la conversation, pas seulement sur les posts chargés.
+  stats?: { replies: number; participants: number; depth: number; first_at: string | null; last_at: string | null };
+}
+
+export interface ConversationBranch {
+  root_id: string;
+  branch: string;
+  posts: Post[];
+  pending: Record<string, number>;
+  truncated: boolean;
 }

@@ -205,6 +205,33 @@ La copie contient les posts, les comptes, les annotations et le cache des profil
 
 Sur Vercel, remplacez `REACT_APP_API_BASE_URL` par `https://145-239-80-211.sslip.io` (sans `/` final), puis **Redeploy**. Vérifiez la connexion et les onglets. Gardez Render et Atlas quelques jours le temps de valider, puis arrêtez-les : les annotations saisies entre-temps ne seraient écrites que sur OVH.
 
+### Importer de nouveaux posts
+
+Exemple : l'export de quartz (`worldcup2026_twitter.archive.gz`, 3,8 millions de posts Twitter), chargé en local dans la base `quartz_import`, sans l'événement France – Paraguay (déjà en ligne) ni la collecte de test `twitter_test_cron_live`.
+
+1. **Sur votre machine**, exporter les posts à envoyer (environ 2 Go) :
+   ```bash
+   mongodump --db quartz_import --collection posts \
+     --query '{"collection_context.event": {"$nin": ["france_paraguay", "twitter_test_cron_live"]}}' \
+     --archive=quartz_sans_frapar.archive.gz --gzip
+   scp quartz_sans_frapar.archive.gz ubuntu@145.239.80.211:dashboard/deploy/ovh/backups/
+   ```
+2. **Sur le serveur**, après avoir déployé la version du code qui contient `post_facts` (`update.sh`), sauvegarder puis importer **sans `--drop`** (les comptes, les annotations et les posts déjà présents ne sont pas touchés) :
+   ```bash
+   cd ~/dashboard/deploy/ovh
+   ./backup.sh
+   set -a; source .env; set +a
+   docker compose exec -T mongo mongorestore -u "$MONGO_ROOT_USER" -p "$MONGO_ROOT_PASSWORD" --authenticationDatabase admin \
+     --nsFrom 'quartz_import.posts' --nsTo 'worldcup2026.posts' --archive --gzip < backups/quartz_sans_frapar.archive.gz
+   ```
+   Les posts déjà en base ont le même `_id` : `mongorestore` les refuse (`duplicate key`) et les compte en « failed ». C'est attendu, il n'y a pas de doublon.
+3. **Laisser l'API reconstruire `post_facts`** : elle attend que le nombre de posts ne bouge plus entre deux vérifications (5 à 10 minutes après la fin de l'import), ou reconstruit tout de suite avec `docker compose restart api`. Le site reste utilisable avec les anciennes données pendant la reconstruction (10 à 20 minutes pour 3,8 millions de posts), puis passe d'un coup aux nouvelles. Suivre l'avancement :
+   ```bash
+   docker compose logs -f api | grep -E "post_facts|préchargées"
+   ```
+   La fin est marquée par `post_facts reconstruit : … posts` puis `Vues principales préchargées`.
+4. Supprimer l'archive importée du serveur (`rm backups/quartz_sans_frapar.archive.gz`) : la sauvegarde de l'étape 2 suffit.
+
 ### Sauvegardes
 
 `backup.sh` enregistre la base dans `deploy/ovh/backups/` et garde 14 jours. À programmer avec `crontab -e` :

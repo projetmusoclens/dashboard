@@ -7,7 +7,7 @@ import { GraphResponse, GraphType, QueryParams } from '../types';
 import api from '../services/api';
 import { fmtNum } from '../utils/format';
 import { CHART_COLORS } from '../data/dashboardData';
-import { GRAPH_DEFAULT_NODES, GRAPH_MAX_NODES } from '../config';
+import { GRAPH_DEFAULT_NODES, GRAPH_MAX_NODES, GRAPH_WARN_NODES } from '../config';
 import {
   bfsDistances, computeLayout, DEFAULT_LAYOUT_PARAMS, detectCommunities, LARGE_GRAPH_NODES, LAYOUT_PARAM_KEYS, LAYOUTS,
   LayoutId, LayoutParams, layoutUsesFocus, runBackgroundLayout, usesBackgroundLayout,
@@ -649,6 +649,16 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
     }
   };
 
+  // Valeur hors limites ramenée dans la plage, ou graphe très grand : l'utilisateur est prévenu.
+  const nodeLimitNotice = (() => {
+    if (nodeLimitInput > GRAPH_MAX_NODES) return { level: 'info', text: `${fmtNum(nodeLimitInput)} nœuds demandés : le maximum est ${fmtNum(GRAPH_MAX_NODES)}, ce sont donc les ${fmtNum(GRAPH_MAX_NODES)} plus fréquents qui sont chargés.` };
+    if (nodeLimitInput && nodeLimitInput < 10) return { level: 'info', text: 'Le minimum est de 10 nœuds.' };
+    if (nodeLimit > GRAPH_WARN_NODES) {
+      return { level: 'warn', text: `Grand graphe (${fmtNum(nodeLimit)} nœuds) : le chargement, l’affichage et surtout le calcul des dispositions peuvent prendre du temps et figer la page quelques secondes. Pour alléger : « Fréq. min. », « Poids min. des arêtes », « Masquer les arêtes », ou la disposition « Communautés (Louvain) ». Pour analyser tout le réseau, l’export GEXF vers Gephi est souvent plus adapté.` };
+    }
+    return null;
+  })();
+
   const layoutInfo = LAYOUTS.find((item) => item.id === layout);
   const isLarge = filteredGraph.nodes.length > LARGE_GRAPH_NODES;
   const paramKeys = LAYOUT_PARAM_KEYS[layout];
@@ -674,6 +684,11 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
           <label htmlFor="graph-min-edge" style={{ fontSize: 12, color: 'var(--text-muted)' }} title="Nombre minimal de posts pour garder une arête">Poids min. des arêtes :</label>
           <input id="graph-min-edge" type="number" min={1} value={minEdgeInput} onChange={(e) => setMinEdgeInput(Number(e.target.value))} style={{ ...inputStyle, width: 70 }} />
         </div>
+        {nodeLimitNotice && (
+          <div role="status" style={{ flexBasis: '100%', fontSize: 12, lineHeight: 1.5, padding: '6px 10px', borderRadius: 8, color: nodeLimitNotice.level === 'warn' ? '#8a5a00' : 'var(--text-secondary)', background: nodeLimitNotice.level === 'warn' ? 'rgba(229,160,13,0.14)' : 'rgba(128,128,128,0.1)' }}>
+            {nodeLimitNotice.text}
+          </div>
+        )}
       </div>
 
       <div style={{ ...cardStyle, padding: '10px 14px', display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -926,7 +941,7 @@ const GraphsTab: React.FC<GraphsTabProps> = ({ filters = {} }) => {
           <div style={cardTitleStyle}>Résumé</div>
           <div style={{ display: 'grid', gap: 10, fontSize: 13, color: 'var(--text-secondary)' }}>
             <div>{fmtNum(filteredGraph.nodes.length)} nœuds affichés sur {fmtNum(graphData?.total_nodes ?? filteredGraph.nodes.length)} au total pour ces filtres</div>
-            <div>{fmtNum(filteredGraph.links.length)} relations affichées sur {fmtNum(graphData?.total_links ?? filteredGraph.links.length)} au total</div>
+            <div>{fmtNum(filteredGraph.links.length)} relations affichées{typeof graphData?.total_links === 'number' ? ` sur ${fmtNum(graphData.total_links)} au total` : ' entre ces nœuds'}</div>
             <div>{activeGraph === 'mentions' ? 'Vue mentions / comptes' : 'Vue hashtags'} · {layoutInfo?.label}</div>
             {focusNode && <div style={{ color: '#2a78d6' }}>Exploration de voisinage active</div>}
             <div>

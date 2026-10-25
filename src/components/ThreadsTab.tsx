@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight, Download, ExternalLink, Eye, Heart, MessageC
 import api from '../services/api';
 import { ConversationDetail, ConversationList, ConversationRoot, ConversationSort, ConversationSummary, Post, QueryParams } from '../types';
 import { fmtNum } from '../utils/format';
-import { downloadFile, fileSlug, toCsv } from '../utils/download';
+import { downloadBlob } from '../utils/download';
 import { safeUrl, toRecord } from '../utils/postRecord';
 import { annotationKey } from '../utils/annotations';
 import AnnotationPanel, { useDirectory, useMyAnnotations } from './AnnotationPanel';
@@ -124,7 +124,21 @@ const PostBody: React.FC<{ post: Post; large?: boolean; annotate: AnnotateContex
   );
 };
 
-const TreeItem: React.FC<{ node: TreeNode; highlight: string | null; ancestors: Set<string>; collapsed: Set<string>; onToggle: (id: string) => void; annotate: AnnotateContext }> = ({ node, highlight, ancestors, collapsed, onToggle, annotate }) => {
+// Réponses non chargées d'un post (grandes conversations) : bouton pour charger sa branche.
+interface BranchContext { pending: Record<string, number>; loading: Set<string>; onLoad: (postId: string) => void }
+
+const MoreReplies: React.FC<{ postId: string; branches: BranchContext }> = ({ postId, branches }) => {
+  const missing = branches.pending[postId];
+  if (!missing) return null;
+  const loading = branches.loading.has(postId);
+  return (
+    <button type="button" className="threads-more-replies" disabled={loading} onClick={() => branches.onLoad(postId)}>
+      {loading ? 'Chargement…' : `Charger ${fmtNum(missing)} réponse${missing > 1 ? 's' : ''} de plus`}
+    </button>
+  );
+};
+
+const TreeItem: React.FC<{ node: TreeNode; highlight: string | null; ancestors: Set<string>; collapsed: Set<string>; onToggle: (id: string) => void; annotate: AnnotateContext; branches: BranchContext }> = ({ node, highlight, ancestors, collapsed, onToggle, annotate, branches }) => {
   const isCollapsed = collapsed.has(node.post.post_id) && !ancestors.has(node.post.post_id);
   const count = node.children.length;
   return (
@@ -137,36 +151,13 @@ const TreeItem: React.FC<{ node: TreeNode; highlight: string | null; ancestors: 
       )}
       {count > 0 && !isCollapsed && (
         <ul className="threads-children">
-          {node.children.map((child) => <TreeItem key={child.post.post_id} node={child} highlight={highlight} ancestors={ancestors} collapsed={collapsed} onToggle={onToggle} annotate={annotate} />)}
+          {node.children.map((child) => <TreeItem key={child.post.post_id} node={child} highlight={highlight} ancestors={ancestors} collapsed={collapsed} onToggle={onToggle} annotate={annotate} branches={branches} />)}
         </ul>
       )}
+      {!isCollapsed && <MoreReplies postId={node.post.post_id} branches={branches} />}
     </li>
   );
 };
-
-function exportConversation(detail: ConversationDetail, format: 'csv' | 'json') {
-  const depth = new Map<string, number>([[detail.root_id, 0]]);
-  const byId = new Map(detail.posts.map((post) => [post.post_id, post]));
-  const depthOf = (id: string, guard = 0): number => {
-    if (depth.has(id)) return depth.get(id)!;
-    const parent = byId.get(id)?.reply_to_id;
-    const value = !parent || guard > 500 ? 1 : depthOf(parent, guard + 1) + 1;
-    depth.set(id, value);
-    return value;
-  };
-  const base = `conversation_${fileSlug(rootTitle(detail.root))}_${new Date().toISOString().slice(0, 10)}`;
-  if (format === 'json') {
-    const posts = detail.posts.map((post) => ({ ...post, depth: depthOf(post.post_id) }));
-    downloadFile(JSON.stringify({ root_id: detail.root_id, root_missing: detail.root_missing, root: detail.root, truncated: detail.truncated, posts }, null, 2), `${base}.json`, 'application/json;charset=utf-8');
-    return;
-  }
-  const rows = [detail.root, ...detail.posts].map((item) => {
-    if (isMissing(item)) return [item.post_id, '', 0, item.platform, item.author_handle, '', '(post non collecté)', '', '', '', '', item.url];
-    const record = toRecord(item);
-    return [item.post_id, item.reply_to_id, item.post_id === detail.root_id ? 0 : depthOf(item.post_id), item.platform, item.author_handle, item.timestamp, item.text, item.engagement?.likes, item.engagement?.reposts, item.engagement?.replies, item.engagement?.views, record.url];
-  });
-  downloadFile(toCsv(['post_id', 'reply_to_id', 'depth', 'platform', 'author_handle', 'timestamp', 'text', 'likes', 'reposts', 'replies', 'views', 'url'], rows), `${base}.csv`, 'text/csv;charset=utf-8');
-}
 
 const ThreadsTab: React.FC<ThreadsTabProps> = ({ filters, highlightedPost, onClearHighlight }) => {
   const [searchInput, setSearchInput] = useState('');
@@ -184,6 +175,11 @@ const ThreadsTab: React.FC<ThreadsTabProps> = ({ filters, highlightedPost, onCle
   const [order, setOrder] = useState<'chrono' | 'likes'>('chrono');
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const viewerRef = useRef<HTMLDivElement | null>(null);
+  // Branches en cours de chargement, et export complet (généré par l'API).
+  const [branchLoading, setBranchLoading] = useState<Set<string>>(() => new Set());
+  const [exporting, setExporting] = useState<'' | 'csv' | 'json'>('');
+  const [exportRaw, setExportRaw] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   // Annotation : un post de la conversation à la fois, avec le même panneau que l'Explorer.
   const [toast, setToast] = useState('');
@@ -268,6 +264,38 @@ const ThreadsTab: React.FC<ThreadsTabProps> = ({ filters, highlightedPost, onCle
   });
   const parentsWithReplies = useMemo(() => new Set((detail?.posts || []).map((post) => post.reply_to_id).filter((id): id is string => Boolean(id) && id !== detail?.root_id)), [detail]);
 
+  // Ajoute à l'arbre les réponses d'une branche non chargée.
+  const loadBranch = (postId: string) => {
+    if (!detail) return;
+    const rootId = detail.root_id;
+    setBranchLoading((current) => new Set(current).add(postId));
+    api.getConversationBranch(rootId, postId)
+      .then((branch) => setDetail((current) => {
+        if (!current || current.root_id !== rootId) return current;
+        const known = new Set(current.posts.map((post) => post.post_id));
+        const pending = { ...(current.pending || {}), ...branch.pending };
+        delete pending[postId];
+        return { ...current, posts: [...current.posts, ...branch.posts.filter((post) => !known.has(post.post_id))], pending };
+      }))
+      .catch((error) => showToast(`Branche non chargée : ${error.message || error}`))
+      .finally(() => setBranchLoading((current) => { const next = new Set(current); next.delete(postId); return next; }));
+  };
+  const branches: BranchContext = { pending: detail?.pending || {}, loading: branchLoading, onLoad: loadBranch };
+
+  const exportFull = async (format: 'csv' | 'json') => {
+    if (!detail) return;
+    setExporting(format);
+    setExportError(null);
+    try {
+      const { blob, name } = await api.exportConversation(detail.root_id, format, format === 'json' && exportRaw);
+      downloadBlob(blob, name);
+    } catch (error: any) {
+      setExportError(error.message || String(error));
+    } finally {
+      setExporting('');
+    }
+  };
+
   const annotate: AnnotateContext = {
     targetId: annotationTarget?.post_id || null,
     counts: annotationCounts,
@@ -279,8 +307,12 @@ const ThreadsTab: React.FC<ThreadsTabProps> = ({ filters, highlightedPost, onCle
     setSelectedRoot(item.root_id);
   };
 
+  // Résumé de toute la conversation (calculé par l'API) ; à défaut, sur les posts chargés.
   const summary = useMemo(() => {
     if (!detail) return null;
+    if (detail.stats) {
+      return { replies: detail.stats.replies, participants: detail.stats.participants, depth: detail.stats.depth, span: duration(detail.stats.first_at, detail.stats.last_at) };
+    }
     const byId = new Map(detail.posts.map((post) => [post.post_id, post]));
     const depths = new Map<string, number>();
     const depthOf = (id: string, guard = 0): number => {
@@ -376,7 +408,11 @@ const ThreadsTab: React.FC<ThreadsTabProps> = ({ filters, highlightedPost, onCle
                   <span><strong>{fmtNum(summary.participants)}</strong> participant(s)</span>
                   <span>profondeur <strong>{summary.depth}</strong></span>
                   {summary.span && <span>sur {summary.span}</span>}
-                  {detail.truncated && <span className="threads-error">conversation tronquée à {fmtNum(detail.posts.length)} posts</span>}
+                  {Object.keys(detail.pending || {}).length > 0 && (
+                    <span className="threads-partial" title="Les réponses non affichées se chargent branche par branche ; les exports contiennent toute la conversation.">
+                      {fmtNum(detail.posts.length)} sur {fmtNum(detail.total_posts ?? summary.replies)} affichées
+                    </span>
+                  )}
                 </div>
                 <div className="threads-actions">
                   <select aria-label="Ordre des réponses" value={order} onChange={(event) => setOrder(event.target.value as 'chrono' | 'likes')}>
@@ -385,10 +421,14 @@ const ThreadsTab: React.FC<ThreadsTabProps> = ({ filters, highlightedPost, onCle
                   </select>
                   <button type="button" onClick={() => setCollapsed(new Set())}>Tout déplier</button>
                   <button type="button" onClick={() => setCollapsed(new Set(parentsWithReplies))}>Replier</button>
-                  <button type="button" onClick={() => exportConversation(detail, 'csv')}><Download size={12} /> CSV</button>
-                  <button type="button" onClick={() => exportConversation(detail, 'json')}><Download size={12} /> JSON</button>
+                  <button type="button" disabled={Boolean(exporting)} onClick={() => exportFull('csv')} title="Toute la conversation, y compris les réponses non affichées"><Download size={12} /> {exporting === 'csv' ? 'Export…' : 'CSV'}</button>
+                  <button type="button" disabled={Boolean(exporting)} onClick={() => exportFull('json')} title="Toute la conversation, y compris les réponses non affichées"><Download size={12} /> {exporting === 'json' ? 'Export…' : 'JSON'}</button>
+                  <label className="threads-export-raw" title="Ajoute les données brutes de chaque post au JSON (fichier beaucoup plus lourd)">
+                    <input type="checkbox" checked={exportRaw} onChange={(event) => setExportRaw(event.target.checked)} /> raw_json
+                  </label>
                 </div>
               </div>
+              {exportError && <div className="threads-error" style={{ fontSize: 12, marginBottom: 8 }}>Export impossible : {exportError}</div>}
 
               <div className={`threads-root ${detail.highlight === detail.root_id ? 'highlight' : ''}`}>
                 {isMissing(detail.root) ? (
@@ -402,9 +442,10 @@ const ThreadsTab: React.FC<ThreadsTabProps> = ({ filters, highlightedPost, onCle
 
               {tree.roots.length ? (
                 <ul className="threads-children top">
-                  {tree.roots.map((node) => <TreeItem key={node.post.post_id} node={node} highlight={detail.highlight} ancestors={tree.ancestors} collapsed={collapsed} onToggle={toggle} annotate={annotate} />)}
+                  {tree.roots.map((node) => <TreeItem key={node.post.post_id} node={node} highlight={detail.highlight} ancestors={tree.ancestors} collapsed={collapsed} onToggle={toggle} annotate={annotate} branches={branches} />)}
                 </ul>
-              ) : <div className="threads-empty">Aucune réponse collectée pour ce post.</div>}
+              ) : !branches.pending[detail.root_id] && <div className="threads-empty">Aucune réponse collectée pour ce post.</div>}
+              <MoreReplies postId={detail.root_id} branches={branches} />
             </>
           )}
           {!detail && !detailLoading && !detailError && <div className="threads-empty">Sélectionnez une conversation dans la liste.</div>}

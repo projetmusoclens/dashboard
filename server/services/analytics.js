@@ -1,8 +1,7 @@
 const { collectionKey, eventName, normalizeCollectionName } = require('./collections');
 
-// Hashtags Unicode (#España, #كأس_العالم) : le motif Mongo des statistiques suit la même règle.
+// Hashtags Unicode (#España, #كأس_العالم).
 const HASHTAG_PATTERN = /#[\p{L}\p{N}_]+/gu;
-const MONGO_HASHTAG_PATTERN = '#[\\p{L}\\p{N}_]+';
 const MENTION_PATTERN = /@[A-Za-z0-9_]+/g;
 
 function extractHashtags(text) {
@@ -67,8 +66,8 @@ function buildStatsFromPosts(posts) {
     if (post.is_quote) byType.quotes += 1;
     if (!post.is_reply && !post.is_retweet && !post.is_quote) byType.original += 1;
     post.matched_keywords.forEach((keyword) => { byKeyword[keyword] = (byKeyword[keyword] || 0) + 1; });
-    (post.text.match(HASHTAG_PATTERN) || []).forEach((tag) => {
-      const key = tag.toLowerCase();
+    // Nombre de posts qui contiennent le hashtag (comme post_facts et le graphe), pas d'occurrences.
+    extractHashtags(post.text).forEach((key) => {
       hashtags[key] = (hashtags[key] || 0) + 1;
     });
     const collectionName = normalizeCollectionName(post.collection_name);
@@ -290,13 +289,14 @@ function timelineRowsFromPosts(posts) {
 }
 
 module.exports = {
-  MONGO_HASHTAG_PATTERN,
   buildGraphFromPosts,
   buildStatsFromPosts,
   buildTimeline,
   createGraphBuilder,
   createTemporalGraphBuilder,
   TIMELINE_BUCKETS,
+  bucketFor,
+  coreTimeBounds,
   edgeKey,
   extractHashtags,
   extractMentions,

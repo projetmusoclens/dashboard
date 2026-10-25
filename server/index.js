@@ -5,7 +5,9 @@ const cors = require('cors');
 const { MONGO_DB_NAME, connectMongo, getDataSource, getDb } = require('./db/data-source');
 const { normalizePost } = require('./services/normalization');
 const { buildStatsFromPosts } = require('./services/analytics');
-const { buildMatchFromQuery } = require('./services/query');
+const { buildFactsMatch } = require('./services/query');
+const { createResponseCache } = require('./services/responseCache');
+const { createFactsManager } = require('./services/factsManager');
 const { bootstrapAdmin, createMemoryStore, createMongoStore } = require('./services/accounts');
 const { registerAnalyticsRoutes } = require('./routes/analytics');
 const { registerCollectionRoutes } = require('./routes/collections');
@@ -71,12 +73,20 @@ async function findPostsByIds(ids) {
   return posts.map(normalizePost);
 }
 
+// Base des posts (MongoDB) pour post_facts ; null en mode archive ou sans base.
+const getPostsDb = () => { const dataSource = getDataSource(); return dataSource.mode === 'db' ? dataSource.db : null; };
+const cache = createResponseCache();
+let warmRoutes = async () => {};
+const facts = createFactsManager({ getDb: getPostsDb, cache, warm: () => warmRoutes() });
+
 const routeDependencies = {
   getDataSource,
   getDb,
   normalizePost,
   buildStatsFromPosts,
-  buildMatchFromQuery,
+  buildFactsMatch,
+  cache,
+  facts,
   safeHandler,
   databaseName: MONGO_DB_NAME,
   getStore,
@@ -86,10 +96,23 @@ const routeDependencies = {
 };
 
 registerAccountRoutes(app, routeDependencies);
-registerAnalyticsRoutes(app, routeDependencies);
-registerCollectionRoutes(app, routeDependencies);
+const analyticsRoutes = registerAnalyticsRoutes(app, routeDependencies);
+const collectionRoutes = registerCollectionRoutes(app, routeDependencies);
+// Préchargement après chaque reconstruction de post_facts : liste des collectes, statistiques et courbe sans filtre.
+warmRoutes = async () => {
+  const db = getPostsDb();
+  if (!db) return;
+  const started = Date.now();
+  const collections = await collectionRoutes.warm(db);
+  // Une sélection par événement, comme quand on coche un match dans le filtre.
+  const events = new Map();
+  collections.forEach((collection) => { if (collection.event) events.set(collection.event, [...(events.get(collection.event) || []), collection.id]); });
+  await analyticsRoutes.warm(db, Array.from(events.values()).map((ids) => ({ collectionId: [...ids].sort().join(',') })));
+  await conversationRoutes.warm(db);
+  console.log(`Vues principales préchargées en ${Math.round((Date.now() - started) / 1000)} s.`);
+};
 registerPostRoutes(app, routeDependencies);
-registerConversationRoutes(app, routeDependencies);
+const conversationRoutes = registerConversationRoutes(app, routeDependencies);
 
 app.use((error, req, res, next) => {
   console.error(error);
@@ -119,6 +142,8 @@ connectMongo().then(async () => {
   const server = app.listen(PORT, () => {
     console.log(`Backend server listening on http://localhost:${PORT}`);
   });
+  // post_facts : construit ou reconstruit en tâche de fond si les posts ont changé, puis vérifié régulièrement.
+  if (getPostsDb()) facts.start();
 
   server.on('error', (error) => {
     if (error && error.code === 'EADDRINUSE') {

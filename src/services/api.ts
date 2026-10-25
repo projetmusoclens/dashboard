@@ -1,5 +1,5 @@
 import {
-  AnnotationShares, Collection, PostAnnotations, SharedPostRef, UserProfile, ConversationDetail, ConversationList, ConversationQuery, GraphQuery, GraphResponse, GraphType,
+  AnnotationShares, Collection, PostAnnotations, SharedPostRef, UserProfile, ConversationBranch, ConversationDetail, ConversationList, ConversationQuery, GraphQuery, GraphResponse, GraphType,
   Post, PostsQuery, QueryParams, StatsResponse, StoredAnnotation, SubgraphPostsResponse, TimelineResponse, User, UserRole,
 } from '../types';
 
@@ -39,8 +39,14 @@ function buildQuery(params: object) {
   return s ? `?${s}` : '';
 }
 
+// Données en préparation sur le serveur (première construction après un déploiement) : nouvel essai
+// toutes les 10 s pendant 10 min au plus, l'écran reste en chargement.
+const PREPARING_RETRY_MS = 10000;
+const PREPARING_MAX_TRIES = 60;
+const wait = (ms: number) => new Promise((resolve) => { window.setTimeout(resolve, ms); });
+
 // Appel authentifié : ajoute le jeton, renvoie à l'écran de connexion sur 401 et remonte le message d'erreur de l'API.
-async function request<T>(path: string, { method = 'GET', body }: { method?: string; body?: unknown } = {}): Promise<T> {
+async function request<T>(path: string, { method = 'GET', body }: { method?: string; body?: unknown } = {}, attempt = 1): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   const token = getStoredToken();
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -48,6 +54,10 @@ async function request<T>(path: string, { method = 'GET', body }: { method?: str
   const res = await fetch(`${API_BASE}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   if (res.status === 401) window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
   const data = await res.json().catch(() => ({}));
+  if (res.status === 503 && data?.preparing && attempt < PREPARING_MAX_TRIES) {
+    await wait(PREPARING_RETRY_MS);
+    return request<T>(path, { method, body }, attempt + 1);
+  }
   if (!res.ok) throw new Error(data?.error || `Erreur API ${res.status}`);
   return data as T;
 }
@@ -113,6 +123,15 @@ const api = {
     request<SubgraphPostsResponse>('/api/graph/subgraph', { method: 'POST', body: { type, nodes, ...params } }),
   getConversations: (params: ConversationQuery) => request<ConversationList>(`/api/conversations${buildQuery(params)}`),
   getConversation: (params: { rootId?: string; postId?: string }) => request<ConversationDetail>(`/api/conversation${buildQuery(params)}`),
+  getConversationBranch: (rootId: string, branch: string) => request<ConversationBranch>(`/api/conversation${buildQuery({ rootId, branch })}`),
+  // Conversation entière (sans limite d'affichage), générée par l'API : renvoie le fichier et son nom.
+  exportConversation: async (rootId: string, format: 'csv' | 'json', includeRaw: boolean) => {
+    const res = await fetch(`${API_BASE}/api/conversation/export${buildQuery({ rootId, format, ...(includeRaw ? { includeRaw: '1' } : {}) })}`, { headers: { Authorization: `Bearer ${getStoredToken()}` } });
+    if (res.status === 401) window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+    if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || `Erreur API ${res.status}`);
+    const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '')?.[1] || `conversation.${format}`;
+    return { blob: await res.blob(), name };
+  },
 };
 
 export default api;

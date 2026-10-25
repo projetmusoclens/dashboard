@@ -1,7 +1,9 @@
 const { matchesPostQuery } = require('../services/query');
+const { FACTS, FACT_SORT_FIELDS } = require('../services/facts');
 
 const POSTS_DEFAULT_LIMIT = 200;
 const POSTS_MAX_LIMIT = 1000;
+const SEARCH_INDEX_MS = 1500;
 const POST_SORTS = {
   likes: { field: 'engagement.likes', value: (post) => post.engagement?.likes || 0 },
   views: { field: 'engagement.views', value: (post) => post.engagement?.views || 0 },
@@ -22,13 +24,13 @@ function registerPostRoutes(app, {
   getDataSource,
   getDb,
   normalizePost,
-  buildMatchFromQuery,
+  buildFactsMatch,
   safeHandler,
   profiles,
+  facts,
 }) {
   app.get('/api/posts', safeHandler(async (req, res) => {
     const dataSource = getDataSource();
-    const match = buildMatchFromQuery(req.query);
     if (dataSource.mode === 'none') return res.json([]);
 
     const { limit, skip, sort } = postsPage(req.query);
@@ -41,13 +43,30 @@ function registerPostRoutes(app, {
       return res.json(await profiles.enrichPosts(posts));
     }
 
-    const posts = await dataSource.db.collection('posts')
-      .find(Object.keys(match).length ? match : {})
-      .sort({ [sort.field]: -1, _id: -1 })
+    if (!facts.ready()) return res.status(503).json({ error: 'Les données sont en cours de préparation sur le serveur. Réessayez dans quelques minutes.', preparing: true });
+    // Tri et pagination sur post_facts (index plateforme + tri + _id), puis lecture des seuls posts affichés.
+    const field = FACT_SORT_FIELDS[req.query.sort] || FACT_SORT_FIELDS.likes;
+    const pageQuery = () => dataSource.db.collection(FACTS)
+      .find(buildFactsMatch(req.query), { projection: { _id: 1 } })
+      .sort({ [field]: -1, _id: -1 })
       .skip(skip)
       .limit(limit)
-      .allowDiskUse(true)
-      .toArray();
+      .allowDiskUse(true);
+    let page;
+    if (!req.query.q) page = await pageQuery().toArray();
+    else {
+      // Recherche de texte : l'index de tri trouve vite un mot fréquent, mais parcourt tout le corpus dans
+      // le désordre pour un mot rare. Au-delà de SEARCH_INDEX_MS, lecture séquentielle puis tri des seuls résultats.
+      try {
+        page = await pageQuery().maxTimeMS(SEARCH_INDEX_MS).toArray();
+      } catch (error) {
+        if (error?.code !== 50) throw error;
+        page = await pageQuery().hint({ $natural: 1 }).toArray();
+      }
+    }
+    const ids = page.map((item) => item._id);
+    const byId = new Map((await dataSource.db.collection('posts').find({ _id: { $in: ids } }).toArray()).map((post) => [String(post._id), post]));
+    const posts = ids.map((id) => byId.get(String(id))).filter(Boolean);
     return res.json(await profiles.enrichPosts(posts.map(normalizePost)));
   }));
 

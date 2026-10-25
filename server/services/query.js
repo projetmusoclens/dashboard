@@ -1,36 +1,9 @@
-const { collectionKey, mongoCollectionKeyExpression } = require('./collections');
+const { collectionKey } = require('./collections');
 
 const POST_KINDS = ['original', 'reply', 'retweet', 'quote'];
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-// Mêmes règles que detectPostKind (normalization.js), exprimées pour les pipelines Mongo.
-function mongoIsRetweetExpression() {
-  return { $or: [
-    { $eq: ['$event_type', 'repost'] },
-    { $ne: [{ $ifNull: ['$raw_json.tweet.retweeted_tweet', null] }, null] },
-  ] };
-}
-
-function mongoIsQuoteExpression() {
-  const embedType = { $getField: { field: { $literal: '$type' }, input: { $ifNull: ['$raw_json.embed', {}] } } };
-  return { $or: [
-    { $ne: [{ $ifNull: ['$raw_json.tweet.quoted_tweet', null] }, null] },
-    { $in: [embedType, ['app.bsky.embed.record', 'app.bsky.embed.recordWithMedia']] },
-  ] };
-}
-
-function mongoIsReplyExpression() {
-  return { $ne: [{ $ifNull: ['$reply_to_id', ''] }, ''] };
-}
-
-function mongoKindCondition(kind) {
-  if (kind === 'retweet') return { $expr: mongoIsRetweetExpression() };
-  if (kind === 'quote') return { $expr: mongoIsQuoteExpression() };
-  if (kind === 'reply') return { $expr: mongoIsReplyExpression() };
-  return { $expr: { $not: [{ $or: [mongoIsRetweetExpression(), mongoIsQuoteExpression(), mongoIsReplyExpression()] }] } };
 }
 
 function postMatchesKind(post, kind) {
@@ -61,51 +34,6 @@ function queryTimeBounds(query) {
   return start || end ? { start, end } : null;
 }
 
-function buildMatchFromQuery(query) {
-  const conditions = [];
-  const ids = queryIds(query);
-  if (ids) conditions.push({ post_id: { $in: ids } });
-  const collectionKeys = queryCollectionKeys(query);
-  if (collectionKeys) {
-    conditions.push({ $expr: { $in: [mongoCollectionKeyExpression(), collectionKeys] } });
-  }
-  if (query.platform) {
-    const platform = String(query.platform).toLowerCase();
-    conditions.push({ $or: [{ platform }, { 'collection_context.platform': platform }] });
-  }
-  if (query.lang) conditions.push({ lang: String(query.lang).toLowerCase() });
-  if (query.q && String(query.q).trim()) {
-    const pattern = new RegExp(escapeRegex(String(query.q).trim()), 'i');
-    conditions.push({ $or: [{ text: pattern }, { author_handle: pattern }, { matched_keywords: pattern }] });
-  }
-  if (POST_KINDS.includes(query.kind)) conditions.push(mongoKindCondition(query.kind));
-  if (query.startDate || query.endDate) {
-    const dateExpression = { $convert: { input: { $ifNull: ['$timestamp', '$collected_at'] }, to: 'date', onError: null, onNull: null } };
-    const comparisons = [];
-    if (query.startDate) comparisons.push({ $gte: [dateExpression, new Date(`${query.startDate}T00:00:00.000Z`)] });
-    if (query.endDate) {
-      const end = new Date(`${query.endDate}T00:00:00.000Z`);
-      end.setUTCDate(end.getUTCDate() + 1);
-      comparisons.push({ $lt: [dateExpression, end] });
-    }
-    conditions.push({ $expr: { $and: comparisons } });
-  }
-
-  const bounds = queryTimeBounds(query);
-  if (bounds) {
-    // Même date que la courbe et le graphe temporel : timestamp, puis createdAt, puis collected_at.
-    const dateExpression = { $convert: { input: { $ifNull: ['$timestamp', { $ifNull: ['$createdAt', '$collected_at'] }] }, to: 'date', onError: null, onNull: null } };
-    const comparisons = [];
-    if (bounds.start) comparisons.push({ $gte: [dateExpression, bounds.start] });
-    if (bounds.end) comparisons.push({ $lt: [dateExpression, bounds.end] });
-    conditions.push({ $expr: { $and: comparisons } });
-  }
-
-  if (conditions.length === 0) return {};
-  if (conditions.length === 1) return conditions[0];
-  return { $and: conditions };
-}
-
 function matchesPostQuery(post, query) {
   const ids = queryIds(query);
   if (ids && !ids.includes(String(post.post_id))) return false;
@@ -134,12 +62,59 @@ function matchesPostQuery(post, query) {
   return true;
 }
 
+// Filtres reconnus d'une requête, sous une forme stable pour servir de clé de cache :
+// les collectes sont triées, l'ordre dans lequel elles ont été cochées ne compte pas.
+function pickFilters(source, keys) {
+  const filters = {};
+  keys.forEach((key) => {
+    if (typeof source[key] !== 'string' || !source[key]) return;
+    filters[key] = key === 'collectionId'
+      ? [...new Set(source[key].split(',').map((value) => value.trim()).filter(Boolean).map(collectionKey))].sort().join(',')
+      : source[key];
+  });
+  if (filters.collectionId === '') delete filters.collectionId;
+  return filters;
+}
+
+// Filtres de l'API sur post_facts : champs déjà normalisés, donc conditions simples que MongoDB
+// sert avec les index. matchesPostQuery applique les mêmes règles en mémoire (mode archive).
+function buildFactsMatch(query) {
+  const conditions = [];
+  const ids = queryIds(query);
+  if (ids) conditions.push({ post_id: { $in: ids } });
+  const collectionKeys = queryCollectionKeys(query);
+  if (collectionKeys) conditions.push({ collection_key: collectionKeys.length === 1 ? collectionKeys[0] : { $in: collectionKeys } });
+  if (query.platform) conditions.push({ platform: String(query.platform).toLowerCase() });
+  if (query.lang) conditions.push({ lang: String(query.lang).toLowerCase() });
+  if (query.q && String(query.q).trim()) {
+    const pattern = new RegExp(escapeRegex(String(query.q).trim()), 'i');
+    conditions.push({ $or: [{ text: pattern }, { author_handle: pattern }, { keywords: pattern }] });
+  }
+  if (query.kind === 'retweet') conditions.push({ is_retweet: true });
+  if (query.kind === 'quote') conditions.push({ is_quote: true });
+  if (query.kind === 'reply') conditions.push({ is_reply: true });
+  if (query.kind === 'original') conditions.push({ is_retweet: false, is_quote: false, is_reply: false });
+  const date = {};
+  if (query.startDate) date.$gte = new Date(`${query.startDate}T00:00:00.000Z`);
+  if (query.endDate) {
+    const end = new Date(`${query.endDate}T00:00:00.000Z`);
+    end.setUTCDate(end.getUTCDate() + 1);
+    date.$lt = end;
+  }
+  const bounds = queryTimeBounds(query);
+  if (bounds?.start && (!date.$gte || bounds.start > date.$gte)) date.$gte = bounds.start;
+  if (bounds?.end && (!date.$lt || bounds.end < date.$lt)) date.$lt = bounds.end;
+  if (Object.keys(date).length) conditions.push({ date });
+
+  if (conditions.length === 0) return {};
+  if (conditions.length === 1) return conditions[0];
+  return { $and: conditions };
+}
+
 module.exports = {
   POST_KINDS,
-  buildMatchFromQuery,
+  buildFactsMatch,
+  pickFilters,
   escapeRegex,
   matchesPostQuery,
-  mongoIsQuoteExpression,
-  mongoIsReplyExpression,
-  mongoIsRetweetExpression,
 };

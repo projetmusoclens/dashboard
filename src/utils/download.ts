@@ -2,14 +2,19 @@
 export function downloadFile(content: string, fileName: string, mimeType: string) {
   // Le BOM permet à Excel de lire correctement les accents des CSV.
   const parts = mimeType.startsWith('text/csv') ? ['﻿', content] : [content];
-  const url = URL.createObjectURL(new Blob(parts, { type: mimeType }));
+  downloadBlob(new Blob(parts, { type: mimeType }), fileName);
+}
+
+// Fichier déjà prêt, par exemple reçu de l'API (exports générés côté serveur).
+export function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
   link.download = fileName;
   document.body.append(link);
   link.click();
   link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 500);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function csvCell(value: unknown): string {
