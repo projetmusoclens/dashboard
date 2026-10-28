@@ -2,10 +2,18 @@
 # Variables lues dans deploy/ovh/.env (copie de .env.example). Voir docs/deploiement.md.
 name: heimdall
 
+# Journaux de chaque conteneur limités à 5 fichiers de 20 Mo : sans limite, ils peuvent remplir le disque.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   mongo:
     image: mongo:7.0
     restart: unless-stopped
+    logging: *logging
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
@@ -31,9 +39,17 @@ services:
       context: ../..
       dockerfile: deploy/ovh/Dockerfile
     restart: unless-stopped
+    logging: *logging
     depends_on:
       mongo:
         condition: service_healthy
+    # « unhealthy » si /api/health ne répond pas 200 (API bloquée ou MongoDB injoignable) : lu par monitor.sh.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:5055/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     environment:
       MONGO_URI: mongodb://${MONGO_APP_USER}:${MONGO_APP_PASSWORD}@mongo:27017/worldcup2026?authSource=worldcup2026
       MONGO_DB_NAME: worldcup2026
@@ -47,6 +63,7 @@ services:
   caddy:
     image: caddy:2
     restart: unless-stopped
+    logging: *logging
     depends_on:
       - api
     ports:

@@ -1,17 +1,20 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   PieChart, Pie, Cell, Tooltip, BarChart, Bar, LabelList,
   XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineChart, Line, Legend,
 } from 'recharts';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { Collection, CollectionStats, DashboardData, TimelineResponse } from '../types';
+import { Collection, CollectionStats, DashboardData, EventSheet, QueryParams, TimelineResponse } from '../types';
+import api from '../services/api';
+import { useAuth } from './AuthGate';
+import { EventSheetEditor, MatchCard } from './EventSheets';
 import { CHART_COLORS } from '../data/dashboardData';
 import KpiCard from './KpiCard';
 import { fmtNum } from '../utils/format';
 import { groupLanguages, LanguageSlice } from '../utils/languages';
 import { eventLabel, groupByEvent } from '../utils/events';
 
-interface OverviewTabProps { data: DashboardData; timeline?: TimelineResponse | null; collections?: Collection[] }
+interface OverviewTabProps { data: DashboardData; timeline?: TimelineResponse | null; collections?: Collection[]; filters?: QueryParams }
 
 export const PLATFORM_META: Record<string, { label: string; color: string }> = {
   twitter: { label: 'Twitter', color: '#2a78d6' },
@@ -76,7 +79,36 @@ const StatCells: React.FC<{ item: Omit<CollectionStats, 'collection_name'> }> = 
   );
 };
 
-const OverviewTab: React.FC<OverviewTabProps> = ({ data, timeline = null, collections = [] }) => {
+const OverviewTab: React.FC<OverviewTabProps> = ({ data, timeline = null, collections = [], filters = {} }) => {
+  const { user } = useAuth();
+  // Fiches des événements de collecte (matchs) : lues par tous, modifiées par les administrateurs.
+  const [sheets, setSheets] = useState<EventSheet[]>([]);
+  const [editing, setEditing] = useState<EventSheet | null>(null);
+  const [sheetSaving, setSheetSaving] = useState(false);
+  const [sheetError, setSheetError] = useState<string | null>(null);
+  useEffect(() => {
+    api.getEventSheets().then((result) => setSheets(result.sheets)).catch(() => setSheets([]));
+  }, []);
+  const replaceSheet = (event: string, sheet: EventSheet | null) => setSheets((current) => (sheet ? [...current.filter((item) => item.event !== event), sheet] : current.filter((item) => item.event !== event)));
+  const saveSheet = async (sheet: EventSheet) => {
+    setSheetSaving(true);
+    setSheetError(null);
+    try {
+      const result = await api.saveEventSheet(sheet.event, sheet);
+      replaceSheet(sheet.event, result.sheet);
+      setEditing(null);
+    } catch (error: any) {
+      setSheetError(error.message || String(error));
+    } finally {
+      setSheetSaving(false);
+    }
+  };
+  const resetSheet = async (sheet: EventSheet) => {
+    if (!window.confirm(`Revenir à la fiche pré-remplie de « ${sheet.title || sheet.event} » ? Les modifications enregistrées seront perdues.`)) return;
+    const result = await api.resetEventSheet(sheet.event).catch(() => null);
+    if (result) replaceSheet(sheet.event, result.sheet);
+  };
+
   // Tableau regroupé par événement (collection_context.event) : une ligne par événement, totaux de ses collectes.
   // Une collecte sans événement garde sa propre ligne.
   const eventStats = useMemo(() => {
@@ -105,6 +137,15 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, timeline = null, collec
   const multiPlatform = presentPlatforms.length > 1;
 
   const timelinePoints = timeline?.points || [];
+  // Événements présents dans la sélection, dans l'ordre chronologique du filtre, et leurs fiches.
+  const selectionSheets = useMemo(() => {
+    const present = new Set(data.collection_stats.map((item) => item.event).filter(Boolean));
+    return groupByEvent(collections)
+      .filter((group) => present.has(group.event))
+      .map((group) => sheets.find((sheet) => sheet.event === group.event))
+      .filter((sheet): sheet is EventSheet => Boolean(sheet));
+  }, [data.collection_stats, collections, sheets]);
+
   const timelinePlatforms = (timeline?.platforms || []).filter((platform) => timelinePoints.some((point) => Number(point[platform]) > 0));
   const bucketMinutes = timeline?.bucket_minutes || 60;
 
@@ -180,6 +221,21 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, timeline = null, collec
         ))}
       </div>
 
+      {/* « Déroulé du match », au-dessus de la courbe générale : courbe resserrée sur le match, moments clés,
+          fiche dans un panneau dédié. Repliable par tous, modifiable par les administrateurs. */}
+      {selectionSheets.length > 0 && (
+        <div style={{ ...cardStyle, padding: '1rem', marginBottom: '1rem' }}>
+          <MatchCard
+            sheets={selectionSheets}
+            collections={collections}
+            filters={filters}
+            canEdit={user.role === 'admin'}
+            onEdit={(sheet) => { setSheetError(null); setEditing(sheet); }}
+            onReset={resetSheet}
+          />
+        </div>
+      )}
+
       <div style={{ ...cardStyle, padding: '1rem', marginBottom: '1rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
           <h3 style={{ ...titleStyle, marginBottom: 0 }}>Nombre de posts dans le temps</h3>
@@ -219,6 +275,8 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, timeline = null, collec
         )}
       </div>
 
+      {editing && <EventSheetEditor sheet={editing} saving={sheetSaving} error={sheetError} onSave={saveSheet} onClose={() => setEditing(null)} />}
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12, marginBottom: '1.5rem' }}>
         <KpiCard label="Total posts" value={fmtNum(total)} sub={multiPlatform || !presentPlatforms[0] ? 'total' : `100 % ${platformLabel(presentPlatforms[0])}`} accent />
         {multiPlatform && presentPlatforms.map((platform) => (
@@ -229,8 +287,9 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ data, timeline = null, collec
         <KpiCard label="Replies collectées" value={fmtNum(byType.replies)} sub="selon reply_to_id" />
         <KpiCard label="Retweets collectés" value={fmtNum(byType.retweets)} sub="retweets / reposts présents dans la collecte" />
         <KpiCard label="Citations collectées" value={fmtNum(byType.quotes)} sub="posts qui citent un autre post" />
-        <KpiCard label="Nbre de Retweet" value={fmtNum(totalRetweets)} sub="somme des reposts affichés" />
-        <KpiCard label="Nbre citation" value={fmtNum(totalQuotes)} sub="citations affichées" />
+        {/* Compteurs fournis par la plateforme : les retweets eux-mêmes ne sont pas collectés. */}
+        <KpiCard label="Retweets reçus" value={fmtNum(totalRetweets)} sub="compteur de la plateforme : retweets des posts collectés (non collectés eux-mêmes)" />
+        <KpiCard label="Citations reçues" value={fmtNum(totalQuotes)} sub="compteur de la plateforme : citations des posts collectés" />
         <KpiCard label="Nbre de emojis" value={fmtNum(totalEmojis)} sub="émoticônes détectées" />
         <KpiCard label="Nbre de lien" value={fmtNum(postsWithLinks)} sub="posts avec URL" />
         <KpiCard label="Proportion des tweets avec liens" value={`${linkShare.toFixed(1)}%`} sub="parmi les posts collectés" />

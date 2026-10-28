@@ -110,6 +110,36 @@ export interface TimelinePoint {
   [platform: string]: number | string;
 }
 
+// Fiche d'un événement de collecte (match) et son déroulé.
+export type EventMomentKind = 'kickoff' | 'goal' | 'penalty' | 'yellow_card' | 'red_card' | 'substitution' | 'var' | 'halftime' | 'second_half' | 'extra_time' | 'shootout' | 'end' | 'other';
+
+export interface EventMoment {
+  time: string;
+  kind: EventMomentKind;
+  minute: string;
+  team: string;
+  label: string;
+}
+
+export interface EventSheet {
+  event: string;
+  title: string;
+  teams: string[];
+  stage: string;
+  venue: string;
+  kickoff_at: string | null;
+  score: string;
+  summary: string;
+  keywords: string;
+  collections: string;
+  notes: string;
+  moments: EventMoment[];
+  source: string;
+  customized: boolean;
+  updated_at?: string | null;
+  updated_by?: string | null;
+}
+
 export interface TimelineResponse {
   bucket_minutes: number;
   excluded: number;

@@ -15,6 +15,9 @@ Les routes lisent et valident les paramètres, les services normalisent les docu
 | `server/routes/posts.js` | Routes `/api/posts` (pagination `limit`/`skip`, tri `sort`, recherche `q`, type `kind`) et `/api/collection-runs`. |
 | `server/routes/analytics.js` | Routes `/api/stats`, `/api/graph`, `/api/stats/timeline` (pas adaptatif) et `POST /api/graph/subgraph` (posts d’un sous-graphe). |
 | `server/routes/conversations.js` | Routes `/api/conversations` (liste paginée, résumés en cache), `/api/conversation` (arbre d’une conversation depuis `rootId` ou `postId` : 5 000 posts affichés au plus, `pending` pour les réponses non chargées, `branch=<post_id>` pour charger une branche, `stats` sur toute la conversation) et `/api/conversation/export` (conversation entière en CSV ou JSON, envoyée par lots). |
+| `server/routes/eventSheets.js` | Fiches des événements de collecte : `GET /api/event-sheets` (tous), `PUT` et `DELETE /api/event-sheets/:event` (administrateurs). |
+| `server/services/eventSheets.js` | Validation des fiches (`cleanSheet`), stockage dans la collection `event_sheets` (ou en mémoire) et fusion avec les fiches pré-remplies. |
+| `server/data/eventSheets.js` | Fiches pré-remplies d’après le document de contexte des collectes : tour, coup d’envoi (UTC), collectes, mots-clés, anomalies. |
 | `server/services/conversationTree.js` | Arbre léger d’une conversation (sur `post_facts`), sélection affichée et branches en attente, résumé, `raw_json` allégé pour l’affichage, lignes CSV. |
 | `server/routes/accounts.js` | Connexion, compte courant, gestion des utilisateurs (admin), annuaire, annotations (`/api/annotations`, import, export), partage (`/api/annotations/shares`) et détail par post (`/api/annotations/post` : mes annotations et celles qui me sont partagées). |
 | `server/services/conversations.js` | Rattachement des réponses à leur racine (collectée ou manquante) et résumés de conversations. |
@@ -70,6 +73,7 @@ La clé est dérivée des données : il n’existe pas de liste codée en dur ni
 | `src/utils/annotations.ts` | Stockage local des annotations de l’Explorer. |
 | `src/utils/graphLayouts.ts` | Spatialisations (graphology : ForceAtlas2, force, Noverlap, Louvain/circlepack) et dispositions géométriques. |
 | `src/utils/subgraphExport.ts` | Sous-graphe induit et exports JSON / CSV / GEXF (statique ou dynamique). |
+| `src/components/EventSheets.tsx` | Encadré « Déroulé du match » de la Vue globale, au-dessus de la courbe générale (courbe resserrée sur le match via `/api/stats/timeline` avec `startTime` / `endTime`, repères et déroulé), panneau de la fiche et formulaire de modification (administrateurs). |
 | `src/utils/events.ts` | Événements de collecte : libellés lisibles, regroupement des collectes par événement, libellé d’une sélection. |
 | `src/utils/graphTime.ts` | Fenêtres de temps du graphe dynamique : sommes sur une fenêtre, bornes, tailles proposées. |
 | `src/utils/download.ts` | Téléchargements et CSV côté navigateur. |

@@ -200,7 +200,7 @@ function App() {
           )}
           {!loadingData && !loadingError && (
             <ErrorBoundary resetKey={activeTab}>
-              {activeTab === 'overview' && <OverviewTab data={dashboardData} timeline={timeline} collections={collections} />}
+              {activeTab === 'overview' && <OverviewTab data={dashboardData} timeline={timeline} collections={collections} filters={filters} />}
               {activeTab === 'posts' && (
                 <ExplorerTab
                   filters={filters}

@@ -1,5 +1,5 @@
 import {
-  AnnotationShares, Collection, PostAnnotations, SharedPostRef, UserProfile, ConversationBranch, ConversationDetail, ConversationList, ConversationQuery, GraphQuery, GraphResponse, GraphType,
+  AnnotationShares, Collection, PostAnnotations, SharedPostRef, UserProfile, ConversationBranch, ConversationDetail, EventSheet, ConversationList, ConversationQuery, GraphQuery, GraphResponse, GraphType,
   Post, PostsQuery, QueryParams, StatsResponse, StoredAnnotation, SubgraphPostsResponse, TimelineResponse, User, UserRole,
 } from '../types';
 
@@ -123,6 +123,9 @@ const api = {
     request<SubgraphPostsResponse>('/api/graph/subgraph', { method: 'POST', body: { type, nodes, ...params } }),
   getConversations: (params: ConversationQuery) => request<ConversationList>(`/api/conversations${buildQuery(params)}`),
   getConversation: (params: { rootId?: string; postId?: string }) => request<ConversationDetail>(`/api/conversation${buildQuery(params)}`),
+  getEventSheets: () => request<{ sheets: EventSheet[] }>('/api/event-sheets'),
+  saveEventSheet: (event: string, sheet: Partial<EventSheet>) => request<{ sheet: EventSheet }>(`/api/event-sheets/${encodeURIComponent(event)}`, { method: 'PUT', body: sheet }),
+  resetEventSheet: (event: string) => request<{ sheet: EventSheet | null }>(`/api/event-sheets/${encodeURIComponent(event)}`, { method: 'DELETE' }),
   getConversationBranch: (rootId: string, branch: string) => request<ConversationBranch>(`/api/conversation${buildQuery({ rootId, branch })}`),
   // Conversation entière (sans limite d'affichage), générée par l'API : renvoie le fichier et son nom.
   exportConversation: async (rootId: string, format: 'csv' | 'json', includeRaw: boolean) => {

@@ -137,7 +137,8 @@ Alternative à Render + Atlas : l’API et MongoDB tournent sur un serveur Ubunt
 | `Caddyfile` | Certificat Let’s Encrypt pour `API_DOMAIN` et relais vers l’API. |
 | `mongo-init.sh` | À la création de la base, crée l’utilisateur de l’API (`readWrite` sur `worldcup2026` seulement). |
 | `.env.example` | Variables à copier dans `deploy/ovh/.env` (secrets, jamais committé). |
-| `backup.sh` / `update.sh` | Sauvegarde quotidienne de la base ; mise à jour de l’API après un push. |
+| `backup.sh` / `update.sh` | Sauvegarde quotidienne de la base (signalée à Healthchecks.io) ; mise à jour de l’API après un push. |
+| `monitor.sh` | Surveillance toutes les 5 minutes (disque, mémoire, conteneurs, API, certificat, sauvegarde), résultat envoyé à Healthchecks.io. |
 
 ```mermaid
 flowchart LR
@@ -241,6 +242,48 @@ Exemple : l'export de quartz (`worldcup2026_twitter.archive.gz`, 3,8 millions de
 ```
 
 Les sauvegardes restent sur le serveur : copiez-les régulièrement ailleurs (`scp ubuntu@145.239.80.211:dashboard/deploy/ovh/backups/*.gz .`) ou activez les sauvegardes du VPS chez OVH. Restauration : même commande `mongorestore` que ci-dessus, avec le fichier de sauvegarde.
+
+### Surveillance et alertes
+
+Trois niveaux, avec alertes par e-mail :
+
+| Niveau | Outil | Ce qui est vérifié | Délai d'alerte |
+|---|---|---|---|
+| De l'extérieur | **UptimeRobot** (gratuit) | `https://145-239-80-211.sslip.io/api/health` répond et contient `"mongo":"ok"` : serveur, réseau, HTTPS, API et MongoDB | ~5 min |
+| Sur le serveur | **`monitor.sh`** (cron, toutes les 5 min) → **Healthchecks.io** (gratuit) | disque (≥ 85 %), mémoire disponible (< 300 Mo), conteneurs arrêtés, `unhealthy` ou qui redémarrent, API en HTTPS, MongoDB, certificat (< 14 jours), sauvegarde de moins de 26 h | ~5 à 10 min ; si le serveur s'arrête, Healthchecks.io ne reçoit plus de signal et prévient aussi |
+| Sauvegarde | **`backup.sh`** → Healthchecks.io | sauvegarde de la nuit réussie (archive de plus de 1 Mo) | le matin |
+
+`/api/health` répond `503` si MongoDB ne répond pas ou n'a pas pu être joint au démarrage, et indique l'état des statistiques (`"facts": "ready"`, `"building"` pendant une reconstruction). Docker vérifie aussi l'API toutes les 30 s (`healthcheck` du conteneur `api`) et les journaux des conteneurs sont limités à 100 Mo chacun.
+
+**Mise en place (une fois)**
+
+1. **Healthchecks.io** : créer un compte sur healthchecks.io (l'adresse e-mail du compte reçoit les alertes), puis deux « checks » :
+   - « OVH surveillance » : *Period* 5 minutes, *Grace* 10 minutes ;
+   - « OVH sauvegarde » : *Period* 1 day, *Grace* 2 hours.
+
+   Copier l'adresse de ping de chacun (`https://hc-ping.com/…`) dans `deploy/ovh/.env` :
+   ```
+   HC_MONITOR_URL=https://hc-ping.com/<adresse du check surveillance>
+   HC_BACKUP_URL=https://hc-ping.com/<adresse du check sauvegarde>
+   ```
+   Ces adresses sont des secrets légers : quiconque les connaît peut envoyer de faux signaux. Elles restent dans `.env`.
+2. **UptimeRobot** : créer un compte sur uptimerobot.com, puis *New monitor* → type *Keyword*, URL `https://145-239-80-211.sslip.io/api/health`, mot-clé `"mongo":"ok"` (alerte si absent), intervalle 5 minutes, alerte par e-mail. Optionnel : un second moniteur HTTP sur l'adresse du site Vercel.
+3. **Sur le serveur**, appliquer la nouvelle configuration Docker (journaux limités, santé de l'API ; quelques secondes de coupure) puis programmer les tâches :
+   ```bash
+   cd ~/dashboard/deploy/ovh
+   git pull --ff-only && docker compose up -d --build
+   ./backup.sh                  # première sauvegarde (sinon monitor.sh signale son absence)
+   ./monitor.sh                 # premier essai : doit afficher « OK · disque … »
+   crontab -e
+   ```
+   et, dans la crontab :
+   ```
+   */5 * * * * /home/ubuntu/dashboard/deploy/ovh/monitor.sh >> /home/ubuntu/monitor.log 2>&1
+   0 3 * * * /home/ubuntu/dashboard/deploy/ovh/backup.sh >> /home/ubuntu/backup.log 2>&1
+   ```
+4. **Mises à jour de sécurité d'Ubuntu** : vérifier qu'elles s'installent seules (`systemctl is-enabled unattended-upgrades` → `enabled`), sinon `sudo apt install unattended-upgrades && sudo dpkg-reconfigure -plow unattended-upgrades`.
+
+**En cas d'alerte** : le message Healthchecks.io contient la liste des problèmes et l'état du serveur. Sur le serveur : `tail -20 ~/monitor.log`, `docker compose ps`, `docker compose logs --tail 50 api`, `df -h /`. Les seuils se règlent dans `.env` (`MONITOR_DISK_MAX_PERCENT`, `MONITOR_MEMORY_MIN_MB`, `MONITOR_CERT_MIN_DAYS`, `MONITOR_BACKUP_MAX_HOURS`). Pendant une maintenance, mettre les checks en pause dans Healthchecks.io et UptimeRobot.
 
 ### Mettre à jour
 

@@ -14,6 +14,7 @@ const { registerCollectionRoutes } = require('./routes/collections');
 const { registerPostRoutes } = require('./routes/posts');
 const { registerConversationRoutes } = require('./routes/conversations');
 const { registerAccountRoutes, registerPublicAuthRoutes } = require('./routes/accounts');
+const { registerEventSheetRoutes } = require('./routes/eventSheets');
 const { createFailureLimiter, createUserAuth } = require('./middleware/auth');
 const { createProfileResolver } = require('./services/blueskyProfiles');
 
@@ -48,8 +49,25 @@ app.use(cors(ALLOWED_ORIGINS.length ? { origin: ALLOWED_ORIGINS } : undefined));
 app.use(compression());
 app.use(express.json({ limit: '2mb' }));
 
-app.get('/api/health', (req, res) => {
-  res.json({ ok: true, database: MONGO_DB_NAME });
+// État de l'API pour la surveillance (UptimeRobot, monitor.sh) : publique, rapide, sans données.
+// 503 si MongoDB ne répond pas ou n'a pas pu être joint au démarrage ; « facts » indique si les statistiques sont prêtes ou en reconstruction.
+const HEALTH_TIMEOUT_MS = 3000;
+app.get('/api/health', async (req, res) => {
+  const database = getDb();
+  let mongo = 'absent';
+  if (database) {
+    const timeout = new Promise((resolve) => { setTimeout(() => resolve('timeout'), HEALTH_TIMEOUT_MS).unref(); });
+    mongo = await Promise.race([database.command({ ping: 1 }).then(() => 'ok', () => 'error'), timeout]);
+  }
+  // « absent » : MongoDB injoignable au démarrage, comptes et annotations en mémoire seulement.
+  const ok = mongo === 'ok';
+  res.status(ok ? 200 : 503).json({
+    ok,
+    database: MONGO_DB_NAME,
+    mongo,
+    facts: facts.building() ? 'building' : facts.ready() ? 'ready' : 'pending',
+    uptime_s: Math.round(process.uptime()),
+  });
 });
 
 registerPublicAuthRoutes(app, { getStore, secret: AUTH_SECRET, limiter: createFailureLimiter(), safeHandler });
@@ -113,6 +131,7 @@ warmRoutes = async () => {
 };
 registerPostRoutes(app, routeDependencies);
 const conversationRoutes = registerConversationRoutes(app, routeDependencies);
+registerEventSheetRoutes(app, routeDependencies);
 
 app.use((error, req, res, next) => {
   console.error(error);
